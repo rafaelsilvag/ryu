@@ -181,13 +181,13 @@ class OFPHandler(ryu.base.app_manager.RyuApp):
             return
         datapath.set_version(max(usable_versions))
 
-        # now send feature
-        features_reqeust = datapath.ofproto_parser.OFPFeaturesRequest(datapath)
-        datapath.send_msg(features_reqeust)
-
-        # now move on to config state
+        # Move on to config state
         self.logger.debug('move onto config mode')
         datapath.set_state(CONFIG_DISPATCHER)
+
+        # Finally, send feature request
+        features_request = datapath.ofproto_parser.OFPFeaturesRequest(datapath)
+        datapath.send_msg(features_request)
 
     @set_ev_handler(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
     def switch_features_handler(self, ev):
@@ -205,14 +205,6 @@ class OFPHandler(ryu.base.app_manager.RyuApp):
             datapath.ports = msg.ports
         else:
             datapath.ports = {}
-
-        ofproto = datapath.ofproto
-        ofproto_parser = datapath.ofproto_parser
-        set_config = ofproto_parser.OFPSetConfig(
-            datapath, ofproto.OFPC_FRAG_NORMAL,
-            128  # TODO:XXX
-        )
-        datapath.send_msg(set_config)
 
         if datapath.ofproto.OFP_VERSION < 0x04:
             self.logger.debug('move onto main mode')
@@ -246,27 +238,59 @@ class OFPHandler(ryu.base.app_manager.RyuApp):
         echo_reply.data = msg.data
         datapath.send_msg(echo_reply)
 
+    @set_ev_handler(ofp_event.EventOFPEchoReply,
+                    [HANDSHAKE_DISPATCHER, CONFIG_DISPATCHER, MAIN_DISPATCHER])
+    def echo_reply_handler(self, ev):
+        msg = ev.msg
+        datapath = msg.datapath
+        datapath.acknowledge_echo_reply(msg.xid)
+
+    @set_ev_handler(ofp_event.EventOFPPortStatus, MAIN_DISPATCHER)
+    def port_status_handler(self, ev):
+        msg = ev.msg
+        datapath = msg.datapath
+        ofproto = datapath.ofproto
+
+        if msg.reason in [ofproto.OFPPR_ADD, ofproto.OFPPR_MODIFY]:
+            datapath.ports[msg.desc.port_no] = msg.desc
+        elif msg.reason == ofproto.OFPPR_DELETE:
+            datapath.ports.pop(msg.desc.port_no, None)
+        else:
+            return
+
+        self.send_event_to_observers(
+            ofp_event.EventOFPPortStateChange(
+                datapath, msg.reason, msg.desc.port_no),
+            datapath.state)
+
     @set_ev_handler(ofp_event.EventOFPErrorMsg,
                     [HANDSHAKE_DISPATCHER, CONFIG_DISPATCHER, MAIN_DISPATCHER])
     def error_msg_handler(self, ev):
         msg = ev.msg
         ofp = msg.datapath.ofproto
-        (version, msg_type, msg_len, xid) = ofproto_parser.header(msg.data)
-        self.logger.debug('EventOFPErrorMsg received.')
         self.logger.debug(
-            'version=%s, msg_type=%s, msg_len=%s, xid=%s', hex(msg.version),
-            hex(msg.msg_type), hex(msg.msg_len), hex(msg.xid))
-        self.logger.debug(
-            ' `-- msg_type: %s', ofp.ofp_msg_type_to_str(msg.msg_type))
-        self.logger.debug(
-            "OFPErrorMsg(type=%s, code=%s, data=b'%s')", hex(msg.type),
-            hex(msg.code), utils.binary_str(msg.data))
-        self.logger.debug(
-            ' |-- type: %s', ofp.ofp_error_type_to_str(msg.type))
-        self.logger.debug(
-            ' |-- code: %s', ofp.ofp_error_code_to_str(msg.type, msg.code))
-        self.logger.debug(
-            ' `-- data: version=%s, msg_type=%s, msg_len=%s, xid=%s',
-            hex(version), hex(msg_type), hex(msg_len), hex(xid))
-        self.logger.debug(
-            '     `-- msg_type: %s', ofp.ofp_msg_type_to_str(msg_type))
+            "EventOFPErrorMsg received.\n"
+            "version=%s, msg_type=%s, msg_len=%s, xid=%s\n"
+            " `-- msg_type: %s\n"
+            "OFPErrorMsg(type=%s, code=%s, data=b'%s')\n"
+            " |-- type: %s\n"
+            " |-- code: %s",
+            hex(msg.version), hex(msg.msg_type), hex(msg.msg_len),
+            hex(msg.xid), ofp.ofp_msg_type_to_str(msg.msg_type),
+            hex(msg.type), hex(msg.code), utils.binary_str(msg.data),
+            ofp.ofp_error_type_to_str(msg.type),
+            ofp.ofp_error_code_to_str(msg.type, msg.code))
+        if len(msg.data) >= ofp.OFP_HEADER_SIZE:
+            (version, msg_type, msg_len, xid) = ofproto_parser.header(msg.data)
+            self.logger.debug(
+                " `-- data: version=%s, msg_type=%s, msg_len=%s, xid=%s\n"
+                "     `-- msg_type: %s",
+                hex(version), hex(msg_type), hex(msg_len), hex(xid),
+                ofp.ofp_msg_type_to_str(msg_type))
+        else:
+            self.logger.warning(
+                "The data field sent from the switch is too short: "
+                "len(msg.data) < OFP_HEADER_SIZE\n"
+                "The OpenFlow Spec says that the data field should contain "
+                "at least 64 bytes of the failed request.\n"
+                "Please check the settings or implementation of your switch.")

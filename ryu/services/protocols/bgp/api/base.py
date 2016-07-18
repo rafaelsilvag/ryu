@@ -18,6 +18,8 @@
 
  This API can be used by various services like RPC, CLI, IoC, etc.
 """
+from __future__ import absolute_import
+
 import inspect
 import logging
 import traceback
@@ -73,7 +75,7 @@ def register(**kwargs):
     Does not do any check or validation.
     """
     def decorator(func):
-        _CALL_REGISTRY[kwargs.get(API_SYM, func.func_name)] = func
+        _CALL_REGISTRY[kwargs.get(API_SYM, func.__name__)] = func
         return func
 
     return decorator
@@ -208,7 +210,7 @@ def call(symbol, **kwargs):
     LOG.info("API method %s called with args: %s", symbol, str(kwargs))
 
     # TODO(PH, JK) improve the way api function modules are loaded
-    import all  # noqa
+    from . import all  # noqa
     if not is_call_registered(symbol):
         message = 'Did not find any method registered by symbol %s' % symbol
         raise MethodNotFound(message)

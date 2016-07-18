@@ -156,7 +156,9 @@ class RyuApp(object):
         self.event_handlers = {}        # ev_cls -> handlers:list
         self.observers = {}     # ev_cls -> observer-name -> states:set
         self.threads = []
+        self.main_thread = None
         self.events = hub.Queue(128)
+        self._events_sem = hub.BoundedSemaphore(self.events.maxsize)
         if hasattr(self.__class__, 'LOGGER_NAME'):
             self.logger = logging.getLogger(self.__class__.LOGGER_NAME)
         else:
@@ -176,9 +178,19 @@ class RyuApp(object):
         self.threads.append(hub.spawn(self._event_loop))
 
     def stop(self):
+        if self.main_thread:
+            hub.kill(self.main_thread)
         self.is_active = False
         self._send_event(self._event_stop, None)
         hub.joinall(self.threads)
+
+    def set_main_thread(self, thread):
+        """
+        Set self.main_thread so that stop() can terminate it.
+
+        Only AppManager.instantiate_apps should call this function.
+        """
+        self.main_thread = thread
 
     def register_handler(self, ev_cls, handler):
         assert callable(handler)
@@ -269,13 +281,25 @@ class RyuApp(object):
     def _event_loop(self):
         while self.is_active or not self.events.empty():
             ev, state = self.events.get()
+            self._events_sem.release()
             if ev == self._event_stop:
                 continue
             handlers = self.get_handlers(ev, state)
             for handler in handlers:
-                handler(ev)
+                try:
+                    handler(ev)
+                except hub.TaskExit:
+                    # Normal exit.
+                    # Propagate upwards, so we leave the event loop.
+                    raise
+                except:
+                    LOG.exception('%s: Exception occurred during handler processing. '
+                                  'Backtrace from offending handler '
+                                  '[%s] servicing event [%s] follows.',
+                                  self.name, handler.__name__, ev.__class__.__name__)
 
     def _send_event(self, ev, state):
+        self._events_sem.acquire()
         self.events.put((ev, state))
 
     def send_event(self, name, ev, state=None):
@@ -325,7 +349,7 @@ class RyuApp(object):
 
 
 class AppManager(object):
-    # singletone
+    # singleton
     _instance = None
 
     @staticmethod
@@ -362,6 +386,7 @@ class AppManager(object):
         self.applications = {}
         self.contexts_cls = {}
         self.contexts = {}
+        self.close_sem = hub.Semaphore()
 
     def load_app(self, name):
         mod = utils.import_module(name)
@@ -490,6 +515,7 @@ class AppManager(object):
         for app in self.applications.values():
             t = app.start()
             if t is not None:
+                app.set_main_thread(t)
                 threads.append(t)
         return threads
 
@@ -508,7 +534,7 @@ class AppManager(object):
         self._close(app)
         events = app.events
         if not events.empty():
-            app.logger.debug('%s events remians %d', app.name, events.qsize())
+            app.logger.debug('%s events remains %d', app.name, events.qsize())
 
     def close(self):
         def close_all(close_dict):
@@ -516,7 +542,10 @@ class AppManager(object):
                 self._close(app)
             close_dict.clear()
 
-        for app_name in list(self.applications.keys()):
-            self.uninstantiate(app_name)
-        assert not self.applications
-        close_all(self.contexts)
+        # This semaphore prevents parallel execution of this function,
+        # as run_apps's finally clause starts another close() call.
+        with self.close_sem:
+            for app_name in list(self.applications.keys()):
+                self.uninstantiate(app_name)
+            assert not self.applications
+            close_all(self.contexts)

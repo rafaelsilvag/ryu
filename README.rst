@@ -23,11 +23,8 @@ If you prefer to install Ryu from the source code::
    % git clone git://github.com/osrg/ryu.git
    % cd ryu; python ./setup.py install
 
-If you want to use Ryu with `OpenStack <http://openstack.org/>`_,
-please refer `networking-ofagent project <https://github.com/stackforge/networking-ofagent>`_.
-
 If you want to write your Ryu application, have a look at
-`Writing ryu application <http://ryu.readthedocs.org/en/latest/writing_ryu_app.html>`_ document.
+`Writing ryu application <http://ryu.readthedocs.io/en/latest/writing_ryu_app.html>`_ document.
 After writing your application, just type::
 
    % ryu-manager yourapp.py
@@ -41,11 +38,13 @@ Some functionalities of ryu requires extra packages:
 - OF-Config requires lxml
 - NETCONF requires paramiko
 - BGP speaker (ssh console) requires paramiko
+- OVSDB support requires ovs  (Note: python 3.4 requires ovs>=2.6.0.dev0)
 
 If you want to use the functionalities, please install requirements::
 
     % pip install lxml
     % pip install paramiko
+    % pip install ovs
 
 
 Support

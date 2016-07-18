@@ -14,6 +14,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import print_function
+
 import six
 import sys
 import unittest
@@ -37,7 +39,7 @@ implemented = {
         ofproto_v1_0.OFPT_FEATURES_REQUEST: (False, True),
         ofproto_v1_0.OFPT_FEATURES_REPLY: (True, False),
         ofproto_v1_0.OFPT_PACKET_IN: (True, False),
-        ofproto_v1_0.OFPT_FLOW_MOD: (False, True),
+        ofproto_v1_0.OFPT_FLOW_MOD: (True, True),
     },
     3: {
         ofproto_v1_2.OFPT_FEATURES_REQUEST: (False, True),
@@ -49,7 +51,7 @@ implemented = {
         ofproto_v1_2.OFPT_FLOW_REMOVED: (True, False),
         ofproto_v1_2.OFPT_PORT_STATUS: (True, False),
         ofproto_v1_2.OFPT_PACKET_OUT: (False, True),
-        ofproto_v1_2.OFPT_FLOW_MOD: (False, True),
+        ofproto_v1_2.OFPT_FLOW_MOD: (True, True),
         ofproto_v1_2.OFPT_GROUP_MOD: (False, True),
         ofproto_v1_2.OFPT_PORT_MOD: (False, True),
         ofproto_v1_2.OFPT_TABLE_MOD: (False, True),
@@ -72,7 +74,7 @@ implemented = {
         ofproto_v1_3.OFPT_FLOW_REMOVED: (True, False),
         ofproto_v1_3.OFPT_PORT_STATUS: (True, False),
         ofproto_v1_3.OFPT_PACKET_OUT: (False, True),
-        ofproto_v1_3.OFPT_FLOW_MOD: (False, True),
+        ofproto_v1_3.OFPT_FLOW_MOD: (True, True),
         ofproto_v1_3.OFPT_GROUP_MOD: (False, True),
         ofproto_v1_3.OFPT_PORT_MOD: (False, True),
         ofproto_v1_3.OFPT_METER_MOD: (False, True),
@@ -99,7 +101,7 @@ implemented = {
         ofproto_v1_4.OFPT_FLOW_REMOVED: (True, False),
         ofproto_v1_4.OFPT_PORT_STATUS: (True, False),
         ofproto_v1_4.OFPT_PACKET_OUT: (False, True),
-        ofproto_v1_4.OFPT_FLOW_MOD: (False, True),
+        ofproto_v1_4.OFPT_FLOW_MOD: (True, True),
         ofproto_v1_4.OFPT_GROUP_MOD: (True, True),
         ofproto_v1_4.OFPT_PORT_MOD: (False, True),
         ofproto_v1_4.OFPT_METER_MOD: (True, True),
@@ -129,7 +131,7 @@ implemented = {
         ofproto_v1_5.OFPT_FLOW_REMOVED: (True, False),
         ofproto_v1_5.OFPT_PORT_STATUS: (True, False),
         ofproto_v1_5.OFPT_PACKET_OUT: (False, True),
-        ofproto_v1_5.OFPT_FLOW_MOD: (False, True),
+        ofproto_v1_5.OFPT_FLOW_MOD: (True, True),
         ofproto_v1_5.OFPT_GROUP_MOD: (True, True),
         ofproto_v1_5.OFPT_PORT_MOD: (False, True),
         ofproto_v1_5.OFPT_METER_MOD: (True, True),

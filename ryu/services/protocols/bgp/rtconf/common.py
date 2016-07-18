@@ -20,7 +20,7 @@ import logging
 import numbers
 
 from ryu.services.protocols.bgp.utils.validation import is_valid_ipv4
-from ryu.services.protocols.bgp.utils.validation import is_valid_old_asn
+from ryu.services.protocols.bgp.utils.validation import is_valid_asn
 
 from ryu.services.protocols.bgp import rtconf
 from ryu.services.protocols.bgp.rtconf.base import BaseConf
@@ -85,7 +85,7 @@ def validate_local_as(asn):
     if asn is None:
         raise MissingRequiredConf(conf_name=LOCAL_AS)
 
-    if not is_valid_old_asn(asn):
+    if not is_valid_asn(asn):
         raise ConfigValueError(desc='Invalid local_as configuration value: %s'
                                % asn)
     return asn
@@ -129,10 +129,11 @@ def validate_refresh_max_eor_time(rmet):
 @validate(name=LABEL_RANGE)
 def validate_label_range(label_range):
     min_label, max_label = label_range
-    if (not min_label or not max_label
-            or not isinstance(min_label, numbers.Integral)
-            or not isinstance(max_label, numbers.Integral) or min_label < 17
-            or min_label >= max_label):
+    if (not min_label or
+            not max_label or
+            not isinstance(min_label, numbers.Integral) or
+            not isinstance(max_label, numbers.Integral) or min_label < 17 or
+            min_label >= max_label):
         raise ConfigValueError(desc=('Invalid label_range configuration value:'
                                      ' (%s).' % label_range))
 

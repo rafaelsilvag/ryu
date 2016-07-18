@@ -78,7 +78,7 @@ class BFDSession(object):
                  detect_mult=3,
                  desired_min_tx_interval=1000000,
                  required_min_rx_interval=1000000,
-                 auth_type=0, auth_keys={}):
+                 auth_type=0, auth_keys=None):
         """
         Initialize a BFD session.
 
@@ -128,6 +128,7 @@ class BFDSession(object):
                               auth_keys={1: "secret key 1",
                                          2: "secret key 2"})
         """
+        auth_keys = auth_keys if auth_keys else {}
         assert not (auth_type and len(auth_keys) == 0)
 
         # RyuApp reference to BFDLib
@@ -567,17 +568,17 @@ class BFDPacket(object):
         """
         pkt = packet.Packet(data)
         i = iter(pkt)
-        eth_pkt = i.next()
+        eth_pkt = next(i)
 
         assert type(eth_pkt) == ethernet.ethernet
 
-        ipv4_pkt = i.next()
+        ipv4_pkt = next(i)
         assert type(ipv4_pkt) == ipv4.ipv4
 
         udp_pkt = i.next()
         assert type(udp_pkt) == udp.udp
 
-        udp_payload = i.next()
+        udp_payload = next(i)
 
         return bfd.bfd.parser(udp_payload)[0]
 
@@ -616,11 +617,11 @@ class ARPPacket(object):
         # Iteratize pkt
         pkt = packet.Packet(data)
         i = iter(pkt)
-        eth_pkt = i.next()
+        eth_pkt = next(i)
         # Ensure it's an ethernet frame.
         assert type(eth_pkt) == ethernet.ethernet
 
-        arp_pkt = i.next()
+        arp_pkt = next(i)
         if type(arp_pkt) != arp.arp:
             raise ARPPacket.ARPUnknownFormat()
 
@@ -787,7 +788,7 @@ class BFDLib(app_manager.RyuApp):
 
     def add_bfd_session(self, dpid, ofport, src_mac, src_ip,
                         dst_mac="FF:FF:FF:FF:FF:FF", dst_ip="255.255.255.255",
-                        auth_type=0, auth_keys={}):
+                        auth_type=0, auth_keys=None):
         """
         Establish a new BFD session and return My Discriminator of new session.
 
@@ -822,6 +823,7 @@ class BFDLib(app_manager.RyuApp):
                             auth_keys={1: "secret key 1",
                                        2: "secret key 2"})
         """
+        auth_keys = auth_keys if auth_keys else {}
         # Generate a unique discriminator
         while True:
             # Generate My Discriminator

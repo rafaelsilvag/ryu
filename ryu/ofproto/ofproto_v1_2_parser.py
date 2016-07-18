@@ -862,6 +862,7 @@ class OFPPacketOut(MsgBase):
                       self.buffer_id, self.in_port, self.actions_len)
 
 
+@_register_parser
 @_set_msg_type(ofproto.OFPT_FLOW_MOD)
 class OFPFlowMod(MsgBase):
     """
@@ -931,7 +932,8 @@ class OFPFlowMod(MsgBase):
                  buffer_id=ofproto.OFP_NO_BUFFER,
                  out_port=0, out_group=0, flags=0,
                  match=None,
-                 instructions=[]):
+                 instructions=None):
+        instructions = instructions if instructions else []
         super(OFPFlowMod, self).__init__(datapath)
         self.cookie = cookie
         self.cookie_mask = cookie_mask
@@ -969,6 +971,31 @@ class OFPFlowMod(MsgBase):
         for inst in self.instructions:
             inst.serialize(self.buf, offset)
             offset += inst.len
+
+    @classmethod
+    def parser(cls, datapath, version, msg_type, msg_len, xid, buf):
+        msg = super(OFPFlowMod, cls).parser(
+            datapath, version, msg_type, msg_len, xid, buf)
+
+        (msg.cookie, msg.cookie_mask, msg.table_id,
+         msg.command, msg.idle_timeout, msg.hard_timeout,
+         msg.priority, msg.buffer_id, msg.out_port,
+         msg.out_group, msg.flags) = struct.unpack_from(
+            ofproto.OFP_FLOW_MOD_PACK_STR0, msg.buf,
+            ofproto.OFP_HEADER_SIZE)
+        offset = ofproto.OFP_FLOW_MOD_SIZE - ofproto.OFP_HEADER_SIZE
+
+        msg.match = OFPMatch.parser(buf, offset)
+        offset += utils.round_up(msg.match.length, 8)
+
+        instructions = []
+        while offset < msg_len:
+            i = OFPInstruction.parser(buf, offset)
+            instructions.append(i)
+            offset += i.len
+        msg.instructions = instructions
+
+        return msg
 
 
 class OFPInstruction(StringifyMixin):
@@ -1556,19 +1583,11 @@ class OFPActionSetField(OFPAction):
         return not hasattr(self, 'value')
 
     def to_jsondict(self):
-        # XXX old api compat
-        if self._composed_with_old_api():
-            # copy object first because serialize_old is destructive
-            o2 = OFPActionSetField(self.field)
-            # serialize and parse to fill new fields
-            buf = bytearray()
-            o2.serialize(buf, 0)
-            o = OFPActionSetField.parser(six.binary_type(buf), 0)
-        else:
-            o = self
         return {
             self.__class__.__name__: {
-                'field': ofproto.oxm_to_jsondict(self.key, self.value)
+                'field': ofproto.oxm_to_jsondict(self.key, self.value),
+                "len": self.len,
+                "type": self.type
             }
         }
 
@@ -1617,6 +1636,11 @@ class OFPActionExperimenter(OFPAction):
     ================ ======================================================
     experimenter     Experimenter ID
     ================ ======================================================
+
+    .. Note::
+
+        For the list of the supported Nicira experimenter actions,
+        please refer to :ref:`ryu.ofproto.nx_actions <nx_actions_structures>`.
     """
     def __init__(self, experimenter, type_=None, len_=None):
         super(OFPActionExperimenter, self).__init__()
@@ -1725,7 +1749,8 @@ class OFPGroupMod(MsgBase):
             datapath.send_msg(req)
     """
     def __init__(self, datapath, command=ofproto.OFPGC_ADD,
-                 type_=ofproto.OFPGT_ALL, group_id=0, buckets=[]):
+                 type_=ofproto.OFPGT_ALL, group_id=0, buckets=None):
+        buckets = buckets if buckets else []
         super(OFPGroupMod, self).__init__(datapath)
         self.command = command
         self.type = type_
@@ -2151,6 +2176,7 @@ class OFPFlowStats(StringifyMixin):
         self.byte_count = byte_count
         self.match = match
         self.instructions = instructions
+        self.length = length
 
     @classmethod
     def parser(cls, buf, offset):
@@ -2697,13 +2723,14 @@ class OFPGroupStats(StringifyMixin):
     """
 
     def __init__(self, group_id, ref_count, packet_count,
-                 byte_count, bucket_counters):
+                 byte_count, bucket_counters, length=None):
         super(OFPGroupStats, self).__init__()
         self.group_id = group_id
         self.ref_count = ref_count
         self.packet_count = packet_count
         self.byte_count = byte_count
         self.bucket_counters = bucket_counters
+        self.length = length
 
     @classmethod
     def parser(cls, buf, offset):
@@ -3328,6 +3355,12 @@ class OFPMatch(StringifyMixin):
     ipv6_nd_tll      MAC address     Target link-layer for ND
     mpls_label       Integer 32bit   MPLS label
     mpls_tc          Integer 8bit    MPLS TC
+    pbb_uca          Integer 8bit    PBB UCA header field
+                                     (EXT-256 Old version of ONF Extension)
+    tcp_flags        Integer 16bit   TCP flags
+                                     (EXT-109 ONF Extension)
+    actset_output    Integer 32bit   Output port from action set metadata
+                                     (EXT-233 ONF Extension)
     ================ =============== ==================================
 
     Example::
@@ -3344,6 +3377,11 @@ class OFPMatch(StringifyMixin):
         ...     print match['ipv6_src']
         ...
         ('2001:db8:bd05:1d2:288a:1fc0:1:10ee', 'ffff:ffff:ffff:ffff::')
+
+    .. Note::
+
+        For the list of the supported Nicira experimenter matches,
+        please refer to :ref:`ryu.ofproto.nx_match <nx_match_structures>`.
 
     .. Note::
 

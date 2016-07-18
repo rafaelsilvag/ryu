@@ -26,9 +26,11 @@ from ryu.lib.packet.bgp import RF_IPv6_UC
 from ryu.lib.packet.bgp import RF_IPv4_VPN
 from ryu.lib.packet.bgp import RF_IPv6_VPN
 from ryu.lib.packet.bgp import RF_RTC_UC
+from ryu.lib.packet.bgp import BGPOptParamCapabilityFourOctetAsNumber
 from ryu.lib.packet.bgp import BGPOptParamCapabilityEnhancedRouteRefresh
 from ryu.lib.packet.bgp import BGPOptParamCapabilityMultiprotocol
 from ryu.lib.packet.bgp import BGPOptParamCapabilityRouteRefresh
+from ryu.lib.packet.bgp import BGP_CAP_FOUR_OCTET_AS_NUMBER
 from ryu.lib.packet.bgp import BGP_CAP_ENHANCED_ROUTE_REFRESH
 from ryu.lib.packet.bgp import BGP_CAP_MULTIPROTOCOL
 from ryu.lib.packet.bgp import BGP_CAP_ROUTE_REFRESH
@@ -38,6 +40,7 @@ from ryu.services.protocols.bgp.rtconf.base import ADVERTISE_PEER_AS
 from ryu.services.protocols.bgp.rtconf.base import BaseConf
 from ryu.services.protocols.bgp.rtconf.base import BaseConfListener
 from ryu.services.protocols.bgp.rtconf.base import CAP_ENHANCED_REFRESH
+from ryu.services.protocols.bgp.rtconf.base import CAP_FOUR_OCTET_AS_NUMBER
 from ryu.services.protocols.bgp.rtconf.base import CAP_MBGP_IPV4
 from ryu.services.protocols.bgp.rtconf.base import CAP_MBGP_IPV6
 from ryu.services.protocols.bgp.rtconf.base import CAP_MBGP_VPNV4
@@ -60,8 +63,7 @@ from ryu.services.protocols.bgp.rtconf.base import SITE_OF_ORIGINS
 from ryu.services.protocols.bgp.rtconf.base import validate
 from ryu.services.protocols.bgp.rtconf.base import validate_med
 from ryu.services.protocols.bgp.rtconf.base import validate_soo_list
-from ryu.services.protocols.bgp.utils.validation import is_valid_ipv4
-from ryu.services.protocols.bgp.utils.validation import is_valid_old_asn
+from ryu.services.protocols.bgp.utils.validation import is_valid_asn
 from ryu.services.protocols.bgp.info_base.base import Filter
 from ryu.services.protocols.bgp.info_base.base import PrefixFilter
 from ryu.services.protocols.bgp.info_base.base import AttributeMap
@@ -75,6 +77,7 @@ ENABLED = 'enabled'
 CHANGES = 'changes'
 LOCAL_ADDRESS = 'local_address'
 LOCAL_PORT = 'local_port'
+LOCAL_AS = 'local_as'
 PEER_NEXT_HOP = 'peer_next_hop'
 PASSWORD = 'password'
 IN_FILTER = 'in_filter'
@@ -92,6 +95,7 @@ CONNECT_MODE_BOTH = 'both'
 DEFAULT_CAP_GR_NULL = True
 DEFAULT_CAP_REFRESH = True
 DEFAULT_CAP_ENHANCED_REFRESH = False
+DEFAULT_CAP_FOUR_OCTET_AS_NUMBER = True
 DEFAULT_CAP_MBGP_IPV4 = True
 DEFAULT_CAP_MBGP_IPV6 = False
 DEFAULT_CAP_MBGP_VPNV4 = False
@@ -181,7 +185,7 @@ def validate_local_port(port):
 
 @validate(name=REMOTE_AS)
 def validate_remote_as(asn):
-    if not is_valid_old_asn(asn):
+    if not is_valid_asn(asn):
         raise ConfigValueError(desc='Invalid remote as value %s' % asn)
     return asn
 
@@ -295,12 +299,13 @@ class NeighborConf(ConfWithId, ConfWithStats):
     REQUIRED_SETTINGS = frozenset([REMOTE_AS, IP_ADDRESS])
     OPTIONAL_SETTINGS = frozenset([CAP_REFRESH,
                                    CAP_ENHANCED_REFRESH,
+                                   CAP_FOUR_OCTET_AS_NUMBER,
                                    CAP_MBGP_IPV4, CAP_MBGP_IPV6,
                                    CAP_MBGP_VPNV4, CAP_MBGP_VPNV6,
                                    CAP_RTC, RTC_AS, HOLD_TIME,
                                    ENABLED, MULTI_EXIT_DISC, MAX_PREFIXES,
                                    ADVERTISE_PEER_AS, SITE_OF_ORIGINS,
-                                   LOCAL_ADDRESS, LOCAL_PORT,
+                                   LOCAL_ADDRESS, LOCAL_PORT, LOCAL_AS,
                                    PEER_NEXT_HOP, PASSWORD,
                                    IN_FILTER, OUT_FILTER,
                                    IS_ROUTE_SERVER_CLIENT, CHECK_FIRST_AS,
@@ -314,6 +319,9 @@ class NeighborConf(ConfWithId, ConfWithStats):
             CAP_REFRESH, DEFAULT_CAP_REFRESH, **kwargs)
         self._settings[CAP_ENHANCED_REFRESH] = compute_optional_conf(
             CAP_ENHANCED_REFRESH, DEFAULT_CAP_ENHANCED_REFRESH, **kwargs)
+        self._settings[CAP_FOUR_OCTET_AS_NUMBER] = compute_optional_conf(
+            CAP_FOUR_OCTET_AS_NUMBER,
+            DEFAULT_CAP_FOUR_OCTET_AS_NUMBER, **kwargs)
         self._settings[CAP_MBGP_IPV4] = compute_optional_conf(
             CAP_MBGP_IPV4, DEFAULT_CAP_MBGP_IPV4, **kwargs)
         self._settings[CAP_MBGP_IPV6] = compute_optional_conf(
@@ -367,6 +375,13 @@ class NeighborConf(ConfWithId, ConfWithStats):
         self._settings[LOCAL_PORT] = compute_optional_conf(
             LOCAL_PORT, None, **kwargs)
 
+        # We use the global defined local (router) AS as the default
+        # local AS.
+        from ryu.services.protocols.bgp.core_manager import CORE_MANAGER
+        g_local_as = CORE_MANAGER.common_conf.local_as
+        self._settings[LOCAL_AS] = compute_optional_conf(
+            LOCAL_AS, g_local_as, **kwargs)
+
         self._settings[PEER_NEXT_HOP] = compute_optional_conf(
             PEER_NEXT_HOP, None, **kwargs)
 
@@ -374,14 +389,11 @@ class NeighborConf(ConfWithId, ConfWithStats):
             PASSWORD, None, **kwargs)
 
         # RTC configurations.
-        self._settings[CAP_RTC] = \
-            compute_optional_conf(CAP_RTC, DEFAULT_CAP_RTC, **kwargs)
+        self._settings[CAP_RTC] = compute_optional_conf(
+            CAP_RTC, DEFAULT_CAP_RTC, **kwargs)
         # Default RTC_AS is local (router) AS.
-        from ryu.services.protocols.bgp.core_manager import \
-            CORE_MANAGER
-        default_rt_as = CORE_MANAGER.common_conf.local_as
-        self._settings[RTC_AS] = \
-            compute_optional_conf(RTC_AS, default_rt_as, **kwargs)
+        self._settings[RTC_AS] = compute_optional_conf(
+            RTC_AS, g_local_as, **kwargs)
 
         # Since ConfWithId' default values use str(self) and repr(self), we
         # call super method after we have initialized other settings.
@@ -438,6 +450,10 @@ class NeighborConf(ConfWithId, ConfWithStats):
     # =========================================================================
 
     @property
+    def local_as(self):
+        return self._settings[LOCAL_AS]
+
+    @property
     def hold_time(self):
         return self._settings[HOLD_TIME]
 
@@ -448,6 +464,17 @@ class NeighborConf(ConfWithId, ConfWithStats):
     @property
     def cap_enhanced_refresh(self):
         return self._settings[CAP_ENHANCED_REFRESH]
+
+    @property
+    def cap_four_octet_as_number(self):
+        return self._settings[CAP_FOUR_OCTET_AS_NUMBER]
+
+    @cap_four_octet_as_number.setter
+    def cap_four_octet_as_number(self, cap):
+        kwargs = {CAP_FOUR_OCTET_AS_NUMBER: cap}
+        self._settings[CAP_FOUR_OCTET_AS_NUMBER] = compute_optional_conf(
+            CAP_FOUR_OCTET_AS_NUMBER,
+            DEFAULT_CAP_FOUR_OCTET_AS_NUMBER, **kwargs)
 
     @property
     def cap_mbgp_ipv4(self):
@@ -590,6 +617,10 @@ class NeighborConf(ConfWithId, ConfWithStats):
         if self.cap_enhanced_refresh:
             capabilities[BGP_CAP_ENHANCED_ROUTE_REFRESH] = [
                 BGPOptParamCapabilityEnhancedRouteRefresh()]
+
+        if self.cap_four_octet_as_number:
+            capabilities[BGP_CAP_FOUR_OCTET_AS_NUMBER] = [
+                BGPOptParamCapabilityFourOctetAsNumber(self.local_as)]
 
         return capabilities
 

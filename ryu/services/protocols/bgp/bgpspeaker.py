@@ -34,8 +34,6 @@ from ryu.services.protocols.bgp.rtconf.common \
     import DEFAULT_REFRESH_MAX_EOR_TIME
 from ryu.services.protocols.bgp.rtconf.common \
     import DEFAULT_REFRESH_STALEPATH_TIME
-from ryu.services.protocols.bgp.rtconf.common \
-    import DEFAULT_BGP_CONN_RETRY_TIME
 from ryu.services.protocols.bgp.rtconf.common import DEFAULT_LABEL_RANGE
 from ryu.services.protocols.bgp.rtconf.common import REFRESH_MAX_EOR_TIME
 from ryu.services.protocols.bgp.rtconf.common import REFRESH_STALEPATH_TIME
@@ -47,18 +45,17 @@ from ryu.services.protocols.bgp.rtconf.base import CAP_MBGP_IPV6
 from ryu.services.protocols.bgp.rtconf.base import CAP_MBGP_VPNV4
 from ryu.services.protocols.bgp.rtconf.base import CAP_MBGP_VPNV6
 from ryu.services.protocols.bgp.rtconf.base import CAP_ENHANCED_REFRESH
+from ryu.services.protocols.bgp.rtconf.base import CAP_FOUR_OCTET_AS_NUMBER
 from ryu.services.protocols.bgp.rtconf.base import MULTI_EXIT_DISC
 from ryu.services.protocols.bgp.rtconf.base import SITE_OF_ORIGINS
 from ryu.services.protocols.bgp.rtconf.neighbors import DEFAULT_CAP_MBGP_IPV4
 from ryu.services.protocols.bgp.rtconf.neighbors import DEFAULT_CAP_MBGP_VPNV4
 from ryu.services.protocols.bgp.rtconf.neighbors import DEFAULT_CAP_MBGP_VPNV6
-from ryu.services.protocols.bgp.rtconf.neighbors \
-    import DEFAULT_CAP_ENHANCED_REFRESH
+from ryu.services.protocols.bgp.rtconf.neighbors import (
+    DEFAULT_CAP_ENHANCED_REFRESH, DEFAULT_CAP_FOUR_OCTET_AS_NUMBER)
 from ryu.services.protocols.bgp.rtconf.neighbors import DEFAULT_CONNECT_MODE
 from ryu.services.protocols.bgp.rtconf.neighbors import PEER_NEXT_HOP
 from ryu.services.protocols.bgp.rtconf.neighbors import PASSWORD
-from ryu.services.protocols.bgp.rtconf.neighbors import IN_FILTER
-from ryu.services.protocols.bgp.rtconf.neighbors import OUT_FILTER
 from ryu.services.protocols.bgp.rtconf.neighbors import IS_ROUTE_SERVER_CLIENT
 from ryu.services.protocols.bgp.rtconf.neighbors import IS_NEXT_HOP_SELF
 from ryu.services.protocols.bgp.rtconf.neighbors import CONNECT_MODE
@@ -241,10 +238,12 @@ class BGPSpeaker(object):
                      enable_vpnv4=DEFAULT_CAP_MBGP_VPNV4,
                      enable_vpnv6=DEFAULT_CAP_MBGP_VPNV6,
                      enable_enhanced_refresh=DEFAULT_CAP_ENHANCED_REFRESH,
+                     enable_four_octet_as_number=DEFAULT_CAP_FOUR_OCTET_AS_NUMBER,
                      next_hop=None, password=None, multi_exit_disc=None,
                      site_of_origins=None, is_route_server_client=False,
                      is_next_hop_self=False, local_address=None,
-                     local_port=None, connect_mode=DEFAULT_CONNECT_MODE):
+                     local_port=None, local_as=None,
+                     connect_mode=DEFAULT_CONNECT_MODE):
         """ This method registers a new neighbor. The BGP speaker tries to
         establish a bgp session with the peer (accepts a connection
         from the peer and also tries to connect to it).
@@ -265,11 +264,17 @@ class BGPSpeaker(object):
         ``enable_vpnv6`` enables VPNv6 address family for this
         neighbor. The default is False.
 
+        ``enable_enhanced_refresh`` enables Enhanced Route Refresh for this
+        neighbor. The default is False.
+
+        ``enable_four_octet_as_number`` enables Four-Octet AS Number
+        capability for this neighbor. The default is True.
+
         ``next_hop`` specifies the next hop IP address. If not
         specified, host's ip address to access to a peer is used.
 
         ``password`` is used for the MD5 authentication if it's
-        specified. By default, the MD5 authenticaiton is disabled.
+        specified. By default, the MD5 authentication is disabled.
 
         ``multi_exit_disc`` specifies multi exit discriminator (MED) value.
         The default is None and if not specified, MED value is
@@ -284,27 +289,31 @@ class BGPSpeaker(object):
         ``is_next_hop_self`` specifies whether the BGP speaker announces
         its own ip address to iBGP neighbor or not as path's next_hop address.
 
-        ``connect_mode`` specifies how to connect to this neighbor.
-        CONNECT_MODE_ACTIVE tries to connect from us.
-        CONNECT_MODE_PASSIVE just listens and wait for the connection.
-        CONNECT_MODE_BOTH use both methods.
-        The default is CONNECT_MODE_BOTH
-
         ``local_address`` specifies Loopback interface address for
         iBGP peering.
 
         ``local_port`` specifies source TCP port for iBGP peering.
 
+        ``local_as`` specifies local AS number per-peer.
+        The default is the AS number of BGPSpeaker instance.
+
+        ``connect_mode`` specifies how to connect to this neighbor.
+        CONNECT_MODE_ACTIVE tries to connect from us.
+        CONNECT_MODE_PASSIVE just listens and wait for the connection.
+        CONNECT_MODE_BOTH use both methods.
+        The default is CONNECT_MODE_BOTH.
         """
-        bgp_neighbor = {}
-        bgp_neighbor[neighbors.IP_ADDRESS] = address
-        bgp_neighbor[neighbors.REMOTE_AS] = remote_as
-        bgp_neighbor[PEER_NEXT_HOP] = next_hop
-        bgp_neighbor[PASSWORD] = password
-        bgp_neighbor[IS_ROUTE_SERVER_CLIENT] = is_route_server_client
-        bgp_neighbor[IS_NEXT_HOP_SELF] = is_next_hop_self
-        bgp_neighbor[CONNECT_MODE] = connect_mode
-        bgp_neighbor[CAP_ENHANCED_REFRESH] = enable_enhanced_refresh
+        bgp_neighbor = {
+            neighbors.IP_ADDRESS: address,
+            neighbors.REMOTE_AS: remote_as,
+            PEER_NEXT_HOP: next_hop,
+            PASSWORD: password,
+            IS_ROUTE_SERVER_CLIENT: is_route_server_client,
+            IS_NEXT_HOP_SELF: is_next_hop_self,
+            CONNECT_MODE: connect_mode,
+            CAP_ENHANCED_REFRESH: enable_enhanced_refresh,
+            CAP_FOUR_OCTET_AS_NUMBER: enable_four_octet_as_number,
+        }
         # v6 advertizement is available with only v6 peering
         if netaddr.valid_ipv4(address):
             bgp_neighbor[CAP_MBGP_IPV4] = enable_ipv4
@@ -331,6 +340,9 @@ class BGPSpeaker(object):
 
         if local_port:
             bgp_neighbor[LOCAL_PORT] = local_port
+
+        if local_as:
+            bgp_neighbor[LOCAL_AS] = local_as
 
         call('neighbor.create', **bgp_neighbor)
 

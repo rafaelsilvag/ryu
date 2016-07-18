@@ -21,8 +21,9 @@ import socket
 import time
 import traceback
 
+from six.moves import zip_longest
+
 from ryu.services.protocols.bgp.base import Activity
-from ryu.services.protocols.bgp.base import OrderedDict
 from ryu.services.protocols.bgp.base import Sink
 from ryu.services.protocols.bgp.base import Source
 from ryu.services.protocols.bgp.base import SUPPORTED_GLOBAL_RF
@@ -44,6 +45,7 @@ from ryu.services.protocols.bgp.rtconf.vrfs import VRF_RF_IPV4, VRF_RF_IPV6
 from ryu.services.protocols.bgp.utils import bgp as bgp_utils
 from ryu.services.protocols.bgp.utils.evtlet import EventletIOFactory
 from ryu.services.protocols.bgp.utils import stats
+from ryu.services.protocols.bgp.utils.validation import is_valid_old_asn
 
 from ryu.lib.packet import bgp
 
@@ -70,6 +72,7 @@ from ryu.lib.packet.bgp import BGP_MSG_ROUTE_REFRESH
 
 from ryu.lib.packet.bgp import BGPPathAttributeNextHop
 from ryu.lib.packet.bgp import BGPPathAttributeAsPath
+from ryu.lib.packet.bgp import BGPPathAttributeAs4Path
 from ryu.lib.packet.bgp import BGPPathAttributeLocalPref
 from ryu.lib.packet.bgp import BGPPathAttributeExtendedCommunities
 from ryu.lib.packet.bgp import BGPPathAttributeMpReachNLRI
@@ -78,7 +81,10 @@ from ryu.lib.packet.bgp import BGPPathAttributeCommunities
 from ryu.lib.packet.bgp import BGPPathAttributeMultiExitDisc
 
 from ryu.lib.packet.bgp import BGP_ATTR_TYPE_ORIGIN
+from ryu.lib.packet.bgp import BGP_ATTR_TYPE_AGGREGATOR
+from ryu.lib.packet.bgp import BGP_ATTR_TYPE_AS4_AGGREGATOR
 from ryu.lib.packet.bgp import BGP_ATTR_TYPE_AS_PATH
+from ryu.lib.packet.bgp import BGP_ATTR_TYPE_AS4_PATH
 from ryu.lib.packet.bgp import BGP_ATTR_TYPE_NEXT_HOP
 from ryu.lib.packet.bgp import BGP_ATTR_TYPE_MP_REACH_NLRI
 from ryu.lib.packet.bgp import BGP_ATTR_TYPE_MP_UNREACH_NLRI
@@ -392,6 +398,14 @@ class Peer(Source, Sink, NeighborConfListener, Activity):
         return self._neigh_conf.multi_exit_disc
 
     @property
+    def local_as(self):
+        return self._neigh_conf.local_as
+
+    @property
+    def cap_four_octet_as_number(self):
+        return self._neigh_conf.cap_four_octet_as_number
+
+    @property
     def in_filters(self):
         return self._in_filters
 
@@ -461,6 +475,11 @@ class Peer(Source, Sink, NeighborConfListener, Activity):
         if not self.in_established:
             raise ValueError('Invalid request: Peer not in established state')
         return self._protocol.is_mbgp_cap_valid(route_family)
+
+    def is_four_octet_as_number_cap_valid(self):
+        if not self.in_established:
+            raise ValueError('Invalid request: Peer not in established state')
+        return self._protocol.is_four_octet_as_number_cap_valid()
 
     def is_ebgp_peer(self):
         """Returns *True* if this is a eBGP peer, else *False*."""
@@ -698,7 +717,8 @@ class Peer(Source, Sink, NeighborConfListener, Activity):
             # Collect update statistics.
             self.state.incr(PeerCounterNames.SENT_UPDATES)
         else:
-            LOG.debug('prefix : %s is not sent by filter : %s', path.nlri, blocked_cause)
+            LOG.debug('prefix : %s is not sent by filter : %s',
+                      path.nlri, blocked_cause)
 
         # We have to create sent_route for every OutgoingRoute which is
         # not a withdraw or was for route-refresh msg.
@@ -816,6 +836,124 @@ class Peer(Source, Sink, NeighborConfListener, Activity):
         from netaddr import IPAddress
         return str(IPAddress(ipv4_address).ipv6())
 
+    def _construct_as_path_attr(self, as_path_attr, as4_path_attr):
+        """Marge AS_PATH and AS4_PATH attribute instances into
+        a single AS_PATH instance."""
+
+        def _listify(li):
+            """Reconstruct AS_PATH list.
+
+            Example::
+
+                >>> _listify([[1, 2, 3], {4, 5}, [6, 7]])
+                [1, 2, 3, {4, 5}, 6, 7]
+            """
+            lo = []
+            for l in li:
+                if isinstance(l, list):
+                    lo.extend(l)
+                elif isinstance(l, set):
+                    lo.append(l)
+                else:
+                    pass
+            return lo
+
+        # If AS4_PATH attribute is None, returns the given AS_PATH attribute
+        if as4_path_attr is None:
+            return as_path_attr
+
+        # If AS_PATH is shorter than AS4_PATH, AS4_PATH should be ignored.
+        if as_path_attr.get_as_path_len() < as4_path_attr.get_as_path_len():
+            return as_path_attr
+
+        org_as_path_list = _listify(as_path_attr.path_seg_list)
+        as4_path_list = _listify(as4_path_attr.path_seg_list)
+
+        # Reverse to compare backward.
+        org_as_path_list.reverse()
+        as4_path_list.reverse()
+
+        new_as_path_list = []
+        tmp_list = []
+        for as_path, as4_path in zip_longest(org_as_path_list, as4_path_list):
+            if as4_path is None:
+                if isinstance(as_path, int):
+                    tmp_list.insert(0, as_path)
+                elif isinstance(as_path, set):
+                    if tmp_list:
+                        new_as_path_list.insert(0, tmp_list)
+                        tmp_list = []
+                    new_as_path_list.insert(0, as_path)
+                else:
+                    pass
+            elif isinstance(as4_path, int):
+                tmp_list.insert(0, as4_path)
+            elif isinstance(as4_path, set):
+                if tmp_list:
+                    new_as_path_list.insert(0, tmp_list)
+                    tmp_list = []
+                new_as_path_list.insert(0, as4_path)
+            else:
+                pass
+        if tmp_list:
+            new_as_path_list.insert(0, tmp_list)
+
+        return bgp.BGPPathAttributeAsPath(new_as_path_list)
+
+    def _trans_as_path(self, as_path_list):
+        """Translates Four-Octet AS number to AS_TRANS and separates
+        AS_PATH list into AS_PATH and AS4_PATH lists if needed.
+
+        If the neighbor does not support Four-Octet AS number,
+        this method constructs AS4_PATH list from AS_PATH list and swaps
+        non-mappable AS number in AS_PATH with AS_TRANS, then
+        returns AS_PATH list and AS4_PATH list.
+        If the neighbor supports Four-Octet AS number, returns
+        the given AS_PATH list and None.
+        """
+
+        def _swap(n):
+            if is_valid_old_asn(n):
+                # mappable
+                return n
+            else:
+                # non-mappable
+                return bgp.AS_TRANS
+
+        # If the neighbor supports Four-Octet AS number, returns
+        # the given AS_PATH list and None.
+        if self.is_four_octet_as_number_cap_valid():
+            return as_path_list, None
+
+        # If the neighbor does not support Four-Octet AS number,
+        # constructs AS4_PATH list from AS_PATH list and swaps
+        # non-mappable AS number in AS_PATH with AS_TRANS.
+        else:
+            new_as_path_list = []
+            for as_path in as_path_list:
+                if isinstance(as_path, set):
+                    path_set = set()
+                    for as_num in as_path:
+                        path_set.add(_swap(as_num))
+                    new_as_path_list.append(path_set)
+                elif isinstance(as_path, list):
+                    path_list = list()
+                    for as_num in as_path:
+                        path_list.append(_swap(as_num))
+                    new_as_path_list.append(path_list)
+                else:
+                    # Ignore invalid as_path type
+                    pass
+
+            # If all of the AS_PATH list is composed of mappable four-octet
+            # AS numbers only, returns the given AS_PATH list
+            # Assumption: If the constructed AS_PATH list is the same as
+            # the given AS_PATH list, all AS number is mappable.
+            if as_path_list == new_as_path_list:
+                return as_path_list, None
+
+            return new_as_path_list, as_path_list
+
     def _construct_update(self, outgoing_route):
         """Construct update message with Outgoing-routes path attribute
         appropriately cloned/copied/updated.
@@ -843,14 +981,18 @@ class Peer(Source, Sink, NeighborConfListener, Activity):
             # Supported and un-supported/unknown attributes.
             origin_attr = None
             nexthop_attr = None
-            aspath_attr = None
+            as_path_attr = None
+            as4_path_attr = None
+            aggregator_attr = None
+            as4_aggregator_attr = None
             extcomm_attr = None
             community_attr = None
             localpref_attr = None
-            unkown_opttrans_attrs = None
+            unknown_opttrans_attrs = None
             nlri_list = [path.nlri]
 
-            # By default we use BGPS's interface IP with this peer as next_hop.
+            # By default, we use BGPSpeaker's interface IP with this peer
+            # as next_hop.
             if self.is_ebgp_peer():
                 next_hop = self._session_next_hop(path)
                 if path.is_local() and path.has_nexthop():
@@ -883,18 +1025,18 @@ class Peer(Source, Sink, NeighborConfListener, Activity):
             assert origin_attr, 'Missing ORIGIN mandatory attribute.'
 
             # AS_PATH Attribute.
-            # Construct AS-path-attr using paths aspath attr. with local AS as
+            # Construct AS-path-attr using paths AS_PATH attr. with local AS as
             # first item.
             path_aspath = pathattr_map.get(BGP_ATTR_TYPE_AS_PATH)
             assert path_aspath, 'Missing AS_PATH mandatory attribute.'
-            # Deep copy aspath_attr value
-            path_seg_list = path_aspath.path_seg_list
+            # Deep copy AS_PATH attr value
+            as_path_list = path_aspath.path_seg_list
             # If this is a iBGP peer.
             if not self.is_ebgp_peer():
                 # When a given BGP speaker advertises the route to an internal
                 # peer, the advertising speaker SHALL NOT modify the AS_PATH
                 # attribute associated with the route.
-                aspath_attr = BGPPathAttributeAsPath(path_seg_list)
+                pass
             else:
                 # When a given BGP speaker advertises the route to an external
                 # peer, the advertising speaker updates the AS_PATH attribute
@@ -916,13 +1058,42 @@ class Peer(Source, Sink, NeighborConfListener, Activity):
                 # 3) if the AS_PATH is empty, the local system creates a path
                 #    segment of type AS_SEQUENCE, places its own AS into that
                 #    segment, and places that segment into the AS_PATH.
-                if (len(path_seg_list) > 0 and
-                        isinstance(path_seg_list[0], list) and
-                        len(path_seg_list[0]) < 255):
-                    path_seg_list[0].insert(0, self._core_service.asn)
+                if (len(as_path_list) > 0 and
+                        isinstance(as_path_list[0], list) and
+                        len(as_path_list[0]) < 255):
+                    as_path_list[0].insert(0, self.local_as)
                 else:
-                    path_seg_list.insert(0, [self._core_service.asn])
-                aspath_attr = BGPPathAttributeAsPath(path_seg_list)
+                    as_path_list.insert(0, [self.local_as])
+            # Construct AS4_PATH list from AS_PATH list and swap
+            # non-mappable AS number with AS_TRANS in AS_PATH.
+            as_path_list, as4_path_list = self._trans_as_path(
+                as_path_list)
+            # If the neighbor supports Four-Octet AS number, send AS_PATH
+            # in Four-Octet.
+            if self.is_four_octet_as_number_cap_valid():
+                as_path_attr = BGPPathAttributeAsPath(
+                    as_path_list, as_pack_str='!I')  # specify Four-Octet.
+            # Otherwise, send AS_PATH in Two-Octet.
+            else:
+                as_path_attr = BGPPathAttributeAsPath(as_path_list)
+            # If needed, send AS4_PATH attribute.
+            if as4_path_list:
+                as4_path_attr = BGPPathAttributeAs4Path(as4_path_list)
+
+            # AGGREGATOR Attribute.
+            aggregator_attr = pathattr_map.get(BGP_ATTR_TYPE_AGGREGATOR)
+            # If the neighbor does not support Four-Octet AS number,
+            # swap non-mappable AS number with AS_TRANS.
+            if (aggregator_attr and
+                    not self.is_four_octet_as_number_cap_valid()):
+                # If AS number of AGGREGATOR is Four-Octet AS number,
+                # swap with AS_TRANS, else do not.
+                aggregator_as_number = aggregator_attr.as_number
+                if not is_valid_old_asn(aggregator_as_number):
+                    aggregator_attr = bgp.BGPPathAttributeAggregator(
+                        bgp.AS_TRANS, aggregator_attr.addr)
+                    as4_aggregator_attr = bgp.BGPPathAttributeAs4Aggregator(
+                        aggregator_as_number, aggregator_attr.addr)
 
             # MULTI_EXIT_DISC Attribute.
             # For eBGP session we can send multi-exit-disc if configured.
@@ -995,7 +1166,7 @@ class Peer(Source, Sink, NeighborConfListener, Activity):
 
             # UNKOWN Attributes.
             # Get optional transitive path attributes
-            unkown_opttrans_attrs = bgp_utils.get_unknow_opttrans_attr(path)
+            unknown_opttrans_attrs = bgp_utils.get_unknown_opttrans_attr(path)
 
             # Ordering path attributes according to type as RFC says. We set
             # MPReachNLRI first as advised by experts as a new trend in BGP
@@ -1006,7 +1177,13 @@ class Peer(Source, Sink, NeighborConfListener, Activity):
                 new_pathattr.append(mpnlri_attr)
 
             new_pathattr.append(origin_attr)
-            new_pathattr.append(aspath_attr)
+            new_pathattr.append(as_path_attr)
+            if as4_path_attr:
+                new_pathattr.append(as4_path_attr)
+            if aggregator_attr:
+                new_pathattr.append(aggregator_attr)
+            if as4_aggregator_attr:
+                new_pathattr.append(as4_aggregator_attr)
             if multi_exit_disc:
                 new_pathattr.append(multi_exit_disc)
             if localpref_attr:
@@ -1015,8 +1192,8 @@ class Peer(Source, Sink, NeighborConfListener, Activity):
                 new_pathattr.append(community_attr)
             if extcomm_attr:
                 new_pathattr.append(extcomm_attr)
-            if unkown_opttrans_attrs:
-                new_pathattr.extend(unkown_opttrans_attrs.values())
+            if unknown_opttrans_attrs:
+                new_pathattr.extend(unknown_opttrans_attrs.values())
 
         if isinstance(path, Ipv4Path):
             update = BGPUpdate(path_attributes=new_pathattr,
@@ -1035,7 +1212,7 @@ class Peer(Source, Sink, NeighborConfListener, Activity):
         if self._neigh_conf.enabled:
             self._connect_retry_event.set()
 
-        while 1:
+        while True:
             self._connect_retry_event.wait()
 
             # Reconnecting immediately after closing connection may be not very
@@ -1065,11 +1242,11 @@ class Peer(Source, Sink, NeighborConfListener, Activity):
                 tcp_conn_timeout = self._common_conf.tcp_conn_timeout
                 try:
                     password = self._neigh_conf.password
-                    sock = self._connect_tcp(peer_address,
-                                             client_factory,
-                                             time_out=tcp_conn_timeout,
-                                             bind_address=bind_addr,
-                                             password=password)
+                    self._connect_tcp(peer_address,
+                                      client_factory,
+                                      time_out=tcp_conn_timeout,
+                                      bind_address=bind_addr,
+                                      password=password)
                 except socket.error:
                     self.state.bgp_state = const.BGP_FSM_ACTIVE
                     if LOG.isEnabledFor(logging.DEBUG):
@@ -1187,7 +1364,10 @@ class Peer(Source, Sink, NeighborConfListener, Activity):
 
         Current setting include capabilities, timers and ids.
         """
-        asnum = self._common_conf.local_as
+        asnum = self.local_as
+        # If local AS number is not Two-Octet AS number, swaps with AS_TRANS.
+        if not is_valid_old_asn(asnum):
+            asnum = bgp.AS_TRANS
         bgpid = self._common_conf.router_id
         holdtime = self._neigh_conf.hold_time
 
@@ -1325,8 +1505,10 @@ class Peer(Source, Sink, NeighborConfListener, Activity):
         # Increment count of update received.
         mp_reach_attr = update_msg.get_path_attr(BGP_ATTR_TYPE_MP_REACH_NLRI)
         mp_unreach_attr = update_msg.get_path_attr(
-            BGP_ATTR_TYPE_MP_UNREACH_NLRI
-        )
+            BGP_ATTR_TYPE_MP_UNREACH_NLRI)
+
+        # Extract advertised path attributes and reconstruct AS_PATH attribute
+        self._extract_and_reconstruct_as_path(update_msg)
 
         nlri_list = update_msg.nlri
         withdraw_list = update_msg.withdrawn_routes
@@ -1344,6 +1526,68 @@ class Peer(Source, Sink, NeighborConfListener, Activity):
 
         if withdraw_list:
             self._extract_and_handle_bgp4_withdraws(withdraw_list)
+
+    def _extract_and_reconstruct_as_path(self, update_msg):
+        """Extracts advertised AS path attributes in the given update message
+        and reconstructs AS_PATH from AS_PATH and AS4_PATH if needed."""
+        umsg_pattrs = update_msg.pathattr_map
+
+        as_aggregator = umsg_pattrs.get(BGP_ATTR_TYPE_AGGREGATOR, None)
+        as4_aggregator = umsg_pattrs.get(BGP_ATTR_TYPE_AS4_AGGREGATOR, None)
+        if as_aggregator and as4_aggregator:
+            # When both AGGREGATOR and AS4_AGGREGATOR are received,
+            # if the AS number in the AGGREGATOR attribute is not AS_TRANS,
+            # then:
+            #  -  the AS4_AGGREGATOR attribute and the AS4_PATH attribute SHALL
+            #     be ignored,
+            #  -  the AGGREGATOR attribute SHALL be taken as the information
+            #     about the aggregating node, and
+            #  -  the AS_PATH attribute SHALL be taken as the AS path
+            #     information.
+            if as_aggregator.as_number != bgp.AS_TRANS:
+                update_msg.path_attributes.remove(as4_aggregator)
+                as4_path = umsg_pattrs.pop(BGP_ATTR_TYPE_AS4_PATH, None)
+                if as4_path:
+                    update_msg.path_attributes.remove(as4_path)
+            # Otherwise,
+            #  -  the AGGREGATOR attribute SHALL be ignored,
+            #  -  the AS4_AGGREGATOR attribute SHALL be taken as the
+            #     information about the aggregating node, and
+            #  -  the AS path information would need to be constructed,
+            #     as in all other cases.
+            else:
+                update_msg.path_attributes.remove(as_aggregator)
+                update_msg.path_attributes.remove(as4_aggregator)
+                update_msg.path_attributes.append(
+                    bgp.BGPPathAttributeAggregator(
+                        as_number=as4_aggregator.as_number,
+                        addr=as4_aggregator.addr,
+                    )
+                )
+
+        as_path = umsg_pattrs.get(BGP_ATTR_TYPE_AS_PATH, None)
+        as4_path = umsg_pattrs.get(BGP_ATTR_TYPE_AS4_PATH, None)
+        if as_path and as4_path:
+            # If the number of AS numbers in the AS_PATH attribute is
+            # less than the number of AS numbers in the AS4_PATH attribute,
+            # then the AS4_PATH attribute SHALL be ignored, and the AS_PATH
+            # attribute SHALL be taken as the AS path information.
+            if as_path.get_as_path_len() < as4_path.get_as_path_len():
+                update_msg.path_attributes.remove(as4_path)
+
+            # If the number of AS numbers in the AS_PATH attribute is larger
+            # than or equal to the number of AS numbers in the AS4_PATH
+            # attribute, then the AS path information SHALL be constructed
+            # by taking as many AS numbers and path segments as necessary
+            # from the leading part of the AS_PATH attribute, and then
+            # prepending them to the AS4_PATH attribute so that the AS path
+            # information has a number of AS numbers identical to that of
+            # the AS_PATH attribute.
+            else:
+                update_msg.path_attributes.remove(as_path)
+                update_msg.path_attributes.remove(as4_path)
+                as_path = self._construct_as_path_attr(as_path, as4_path)
+                update_msg.path_attributes.append(as_path)
 
     def _extract_and_handle_bgp4_new_paths(self, update_msg):
         """Extracts new paths advertised in the given update message's
@@ -1370,7 +1614,7 @@ class Peer(Source, Sink, NeighborConfListener, Activity):
 
         aspath = umsg_pattrs.get(BGP_ATTR_TYPE_AS_PATH)
         # Check if AS_PATH has loops.
-        if aspath.has_local_as(self._common_conf.local_as):
+        if aspath.has_local_as(self.local_as):
             LOG.error('Update message AS_PATH has loops. Ignoring this'
                       ' UPDATE. %s', update_msg)
             return
@@ -1405,7 +1649,8 @@ class Peer(Source, Sink, NeighborConfListener, Activity):
                 tm = self._core_service.table_manager
                 tm.learn_path(new_path)
             else:
-                LOG.debug('prefix : %s is blocked by in-bound filter: %s', msg_nlri, blocked_cause)
+                LOG.debug('prefix : %s is blocked by in-bound filter: %s',
+                          msg_nlri, blocked_cause)
 
         # If update message had any qualifying new paths, do some book-keeping.
         if msg_nlri_list:
@@ -1467,7 +1712,8 @@ class Peer(Source, Sink, NeighborConfListener, Activity):
                 tm = self._core_service.table_manager
                 tm.learn_path(w_path)
             else:
-                LOG.debug('prefix : %s is blocked by in-bound filter: %s', nlri_str, blocked_cause)
+                LOG.debug('prefix : %s is blocked by in-bound filter: %s',
+                          nlri_str, blocked_cause)
 
     def _extract_and_handle_mpbgp_new_paths(self, update_msg):
         """Extracts new paths advertised in the given update message's
@@ -1496,7 +1742,7 @@ class Peer(Source, Sink, NeighborConfListener, Activity):
 
         aspath = umsg_pattrs.get(BGP_ATTR_TYPE_AS_PATH)
         # Check if AS_PATH has loops.
-        if aspath.has_local_as(self._common_conf.local_as):
+        if aspath.has_local_as(self.local_as):
             LOG.error('Update message AS_PATH has loops. Ignoring this'
                       ' UPDATE. %s', update_msg)
             return
@@ -1562,7 +1808,8 @@ class Peer(Source, Sink, NeighborConfListener, Activity):
                     tm = self._core_service.table_manager
                     tm.learn_path(new_path)
             else:
-                LOG.debug('prefix : %s is blocked by in-bound filter: %s', msg_nlri, blocked_cause)
+                LOG.debug('prefix : %s is blocked by in-bound filter: %s',
+                          msg_nlri, blocked_cause)
 
         # If update message had any qualifying new paths, do some book-keeping.
         if msg_nlri_list:
@@ -1623,7 +1870,8 @@ class Peer(Source, Sink, NeighborConfListener, Activity):
                 tm = self._core_service.table_manager
                 tm.learn_path(w_path)
             else:
-                LOG.debug('prefix : %s is blocked by in-bound filter: %s', w_nlri, blocked_cause)
+                LOG.debug('prefix : %s is blocked by in-bound filter: %s',
+                          w_nlri, blocked_cause)
 
     def _handle_eor(self, route_family):
         """Currently we only handle EOR for RTC address-family.
@@ -1866,7 +2114,8 @@ class Peer(Source, Sink, NeighborConfListener, Activity):
 
         # Check if this session is available for given paths afi/safi
         path_rf = path.route_family
-        if not self.is_mpbgp_cap_valid(path_rf):
+        if not (self.is_mpbgp_cap_valid(path_rf) or
+                path_rf in [RF_IPv4_UC, RF_IPv6_UC]):
             LOG.debug('Skipping sending path as %s route family is not'
                       ' available for this session', path_rf)
             return

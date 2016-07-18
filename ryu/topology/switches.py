@@ -17,7 +17,6 @@ import logging
 import six
 import struct
 import time
-import json
 from ryu import cfg
 
 from ryu.topology import event
@@ -32,8 +31,8 @@ from ryu.lib.dpid import dpid_to_str, str_to_dpid
 from ryu.lib.port_no import port_no_to_str
 from ryu.lib.packet import packet, ethernet
 from ryu.lib.packet import lldp, ether_types
-from ryu.lib.packet import arp, ipv4, ipv6
 from ryu.ofproto.ether import ETH_TYPE_LLDP
+from ryu.ofproto.ether import ETH_TYPE_CFM
 from ryu.ofproto import nx_match
 from ryu.ofproto import ofproto_v1_0
 from ryu.ofproto import ofproto_v1_2
@@ -87,7 +86,7 @@ class Port(object):
         return {'dpid': dpid_to_str(self.dpid),
                 'port_no': port_no_to_str(self.port_no),
                 'hw_addr': self.hw_addr,
-                'name': self.name.rstrip('\0')}
+                'name': self.name.decode('utf-8')}
 
     # for Switch.del_port()
     def __eq__(self, other):
@@ -206,10 +205,14 @@ class HostState(dict):
         if not host:
             return
 
-        if ip_v4 != None and ip_v4 not in host.ipv4:
+        if ip_v4 is not None:
+            if ip_v4 in host.ipv4:
+                host.ipv4.remove(ip_v4)
             host.ipv4.append(ip_v4)
 
-        if ip_v6 != None and ip_v6 not in host.ipv6:
+        if ip_v6 is not None:
+            if ip_v6 in host.ipv6:
+                host.ipv6.remove(ip_v6)
             host.ipv6.append(ip_v6)
 
     def get_by_dpid(self, dpid):
@@ -277,9 +280,8 @@ class PortDataState(dict):
 
     def __init__(self):
         super(PortDataState, self).__init__()
-        self._root = root = []          # sentinel node
-        root[:] = [root, root, None]    # [_PREV, _NEXT, _KEY]
-                                        # doubly linked list
+        self._root = root = []  # sentinel node
+        root[:] = [root, root, None]  # [_PREV, _NEXT, _KEY] doubly linked list
         self._map = {}
 
     def _remove_key(self, key):
@@ -472,7 +474,7 @@ class LLDPPacket(object):
         if tlv_chassis_id.subtype != lldp.ChassisID.SUB_LOCALLY_ASSIGNED:
             raise LLDPPacket.LLDPUnknownFormat(
                 msg='unknown chassis id subtype %d' % tlv_chassis_id.subtype)
-        chassis_id = tlv_chassis_id.chassis_id
+        chassis_id = tlv_chassis_id.chassis_id.decode('utf-8')
         if not chassis_id.startswith(LLDPPacket.CHASSIS_ID_PREFIX):
             raise LLDPPacket.LLDPUnknownFormat(
                 msg='unknown chassis id format %s' % chassis_id)
@@ -495,6 +497,7 @@ class Switches(app_manager.RyuApp):
     OFP_VERSIONS = [ofproto_v1_0.OFP_VERSION, ofproto_v1_2.OFP_VERSION,
                     ofproto_v1_3.OFP_VERSION, ofproto_v1_4.OFP_VERSION]
     _EVENTS = [event.EventSwitchEnter, event.EventSwitchLeave,
+               event.EventSwitchReconnected,
                event.EventPortAdd, event.EventPortDelete,
                event.EventPortModify,
                event.EventLinkAdd, event.EventLinkDelete,
@@ -547,8 +550,9 @@ class Switches(app_manager.RyuApp):
 
     def _unregister(self, dp):
         if dp.id in self.dps:
-            del self.dps[dp.id]
-            del self.port_state[dp.id]
+            if (self.dps[dp.id] == dp):
+                del self.dps[dp.id]
+                del self.port_state[dp.id]
 
     def _get_switch(self, dpid):
         if dpid in self.dps:
@@ -602,16 +606,19 @@ class Switches(app_manager.RyuApp):
         if ev.state == MAIN_DISPATCHER:
             dp_multiple_conns = False
             if dp.id in self.dps:
-                LOG.warning('multiple connections from %s', dpid_to_str(dp.id))
+                LOG.warning('Multiple connections from %s', dpid_to_str(dp.id))
                 dp_multiple_conns = True
+                (self.dps[dp.id]).close()
 
             self._register(dp)
             switch = self._get_switch(dp.id)
             LOG.debug('register %s', switch)
 
-            # Do not send event while dp has multiple connections.
             if not dp_multiple_conns:
                 self.send_event_to_observers(event.EventSwitchEnter(switch))
+            else:
+                evt = event.EventSwitchReconnected(switch)
+                self.send_event_to_observers(evt)
 
             if not self.link_discovery:
                 return
@@ -665,19 +672,23 @@ class Switches(app_manager.RyuApp):
             # dp.id is None when datapath dies before handshake
             if dp.id is None:
                 return
+
             switch = self._get_switch(dp.id)
-            self._unregister(dp)
-            LOG.debug('unregister %s', switch)
-            self.send_event_to_observers(event.EventSwitchLeave(switch))
+            if switch:
+                if switch.dp is dp:
+                    self._unregister(dp)
+                    LOG.debug('unregister %s', switch)
+                    evt = event.EventSwitchLeave(switch)
+                    self.send_event_to_observers(evt)
 
-            if not self.link_discovery:
-                return
+                    if not self.link_discovery:
+                        return
 
-            for port in switch.ports:
-                if not port.is_reserved():
-                    self.ports.del_port(port)
-                    self._link_down(port)
-            self.lldp_event.set()
+                    for port in switch.ports:
+                        if not port.is_reserved():
+                            self.ports.del_port(port)
+                            self._link_down(port)
+                    self.lldp_event.set()
 
     @set_ev_cls(ofp_event.EventOFPPortStatus, MAIN_DISPATCHER)
     def port_status_handler(self, ev):
@@ -761,8 +772,8 @@ class Switches(app_manager.RyuApp):
         msg = ev.msg
         try:
             src_dpid, src_port_no = LLDPPacket.lldp_parse(msg.data)
-        except LLDPPacket.LLDPUnknownFormat as e:
-            # This handler can receive all the packtes which can be
+        except LLDPPacket.LLDPUnknownFormat:
+            # This handler can receive all the packets which can be
             # not-LLDP packet. Ignore it silently
             return
 
@@ -784,7 +795,7 @@ class Switches(app_manager.RyuApp):
             # There are races between EventOFPPacketIn and
             # EventDPPortAdd. So packet-in event can happend before
             # port add event. In that case key error can happend.
-            # LOG.debug('lldp_received: KeyError %s', e)
+            # LOG.debug('lldp_received error', exc_info=True)
             pass
 
         dst = self._get_port(dst_dpid, dst_port_no)
@@ -798,16 +809,21 @@ class Switches(app_manager.RyuApp):
         # LOG.debug("  old_peer=%s", old_peer)
         if old_peer and old_peer != dst:
             old_link = Link(src, old_peer)
+            del self.links[old_link]
             self.send_event_to_observers(event.EventLinkDelete(old_link))
 
         link = Link(src, dst)
         if link not in self.links:
             self.send_event_to_observers(event.EventLinkAdd(link))
 
-            # remove hosts from edge port
+            # remove hosts if it's not attached to edge port
+            host_to_del = []
             for host in self.hosts.values():
                 if not self._is_edge_port(host.port):
-                    del self.hosts[host.mac]
+                    host_to_del.append(host.mac)
+
+            for host_mac in host_to_del:
+                del self.hosts[host_mac]
 
         if not self.links.update_link(src, dst):
             # reverse link is not detected yet.
@@ -820,11 +836,10 @@ class Switches(app_manager.RyuApp):
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
     def host_discovery_packet_in_handler(self, ev):
         msg = ev.msg
-        pkt = packet.Packet(msg.data)
-        eth = pkt.get_protocols(ethernet.ethernet)[0]
+        eth, pkt_type, pkt_data = ethernet.ethernet.parser(msg.data)
 
-        # ignore lldp packet
-        if eth.ethertype == ETH_TYPE_LLDP:
+        # ignore lldp and cfm packets
+        if eth.ethertype in (ETH_TYPE_LLDP, ETH_TYPE_CFM):
             return
 
         datapath = msg.datapath
@@ -855,26 +870,26 @@ class Switches(app_manager.RyuApp):
 
         # arp packet, update ip address
         if eth.ethertype == ether_types.ETH_TYPE_ARP:
-            arp_pkt = pkt.get_protocols(arp.arp)[0]
+            arp_pkt, _, _ = pkt_type.parser(pkt_data)
             self.hosts.update_ip(host, ip_v4=arp_pkt.src_ip)
 
         # ipv4 packet, update ipv4 address
         elif eth.ethertype == ether_types.ETH_TYPE_IP:
-            ipv4_pkt = pkt.get_protocols(ipv4.ipv4)[0]
+            ipv4_pkt, _, _ = pkt_type.parser(pkt_data)
             self.hosts.update_ip(host, ip_v4=ipv4_pkt.src)
 
         # ipv6 packet, update ipv6 address
         elif eth.ethertype == ether_types.ETH_TYPE_IPV6:
             # TODO: need to handle NDP
-            ipv6_pkt = pkt.get_protocols(ipv6.ipv6)[0]
+            ipv6_pkt, _, _ = pkt_type.parser(pkt_data)
             self.hosts.update_ip(host, ip_v6=ipv6_pkt.src)
 
     def send_lldp_packet(self, port):
         try:
             port_data = self.ports.lldp_sent(port)
-        except KeyError as e:
+        except KeyError:
             # ports can be modified during our sleep in self.lldp_loop()
-            # LOG.debug('send_lldp: KeyError %s', e)
+            # LOG.debug('send_lld error', exc_info=True)
             return
         if port_data.is_down:
             return
