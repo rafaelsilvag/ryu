@@ -1446,6 +1446,14 @@ class EvpnNLRI(StringifyMixin, _TypeDisp):
             label = label << 4 | 1
         return six.binary_type(_LabelledAddrPrefix._label_to_bin(label))
 
+    @staticmethod
+    def _vni_from_bin(buf):
+        return type_desc.Int3.to_user(six.binary_type(buf[:3])), buf[3:]
+
+    @staticmethod
+    def _vni_to_bin(vni):
+        return type_desc.Int3.from_user(vni)
+
     @property
     def prefix(self):
         def _format(i):
@@ -1509,34 +1517,78 @@ class EvpnEthernetAutoDiscoveryNLRI(EvpnNLRI):
     # +---------------------------------------+
     _PACK_STR = "!8s10sI3s"
     NLRI_PREFIX_FIELDS = ['esi', 'ethernet_tag_id']
+    _TYPE = {
+        'ascii': [
+            'route_dist',
+        ]
+    }
 
-    def __init__(self, route_dist, esi, ethernet_tag_id, mpls_label,
+    def __init__(self, route_dist, esi, ethernet_tag_id,
+                 mpls_label=None, vni=None, label=None,
                  type_=None, length=None):
         super(EvpnEthernetAutoDiscoveryNLRI, self).__init__(type_, length)
         self.route_dist = route_dist
         self.esi = esi
         self.ethernet_tag_id = ethernet_tag_id
-        self.mpls_label = mpls_label
+        if label:
+            # If binary type label field value is specified, stores it
+            # and decodes as MPLS label and VNI.
+            self._label = label
+            self._mpls_label, _, _ = self._mpls_label_from_bin(label)
+            self._vni, _ = self._vni_from_bin(label)
+        else:
+            # If either MPLS label or VNI is specified, stores it
+            # and encodes into binary type label field value.
+            self._label = self._serialize_label(mpls_label, vni)
+            self._mpls_label = mpls_label
+            self._vni = vni
+
+    def _serialize_label(self, mpls_label, vni):
+        if mpls_label:
+            return self._mpls_label_to_bin(mpls_label, is_stack=True)
+        elif vni:
+            return self._vni_to_bin(vni)
+        else:
+            return b'\x00' * 3
 
     @classmethod
     def parse_value(cls, buf):
         route_dist, rest = cls._rd_from_bin(buf)
         esi, rest = cls._esi_from_bin(rest)
         ethernet_tag_id, rest = cls._ethernet_tag_id_from_bin(rest)
-        mpls_label, rest, _ = cls._mpls_label_from_bin(rest)
 
         return {
             'route_dist': route_dist.formatted_str,
             'esi': esi,
             'ethernet_tag_id': ethernet_tag_id,
-            'mpls_label': mpls_label,
+            'label': rest,
         }
 
     def serialize_value(self):
         route_dist = _RouteDistinguisher.from_str(self.route_dist)
         return struct.pack(
             self._PACK_STR, route_dist.serialize(), self.esi.serialize(),
-            self.ethernet_tag_id, self._mpls_label_to_bin(self.mpls_label))
+            self.ethernet_tag_id, self._label)
+
+    @property
+    def mpls_label(self):
+        return self._mpls_label
+
+    @mpls_label.setter
+    def mpls_label(self, mpls_label):
+        self._label = self._mpls_label_to_bin(mpls_label, is_stack=True)
+        self._mpls_label = mpls_label
+        self._vni = None  # disables VNI
+
+    @property
+    def vni(self):
+        return self._vni
+
+    @vni.setter
+    def vni(self, vni):
+        self._label = self._vni_to_bin(vni)
+        self._mpls_label = None  # disables MPLS label
+        self._vni = vni
 
     @property
     def label_list(self):
@@ -1569,18 +1621,20 @@ class EvpnMacIPAdvertisementNLRI(EvpnNLRI):
     # +---------------------------------------+
     # |  MPLS Label2 (0 or 3 octets)          |
     # +---------------------------------------+
-    _PACK_STR = "!8s10sIB6sB%ds3s%ds"
+    _PACK_STR = "!8s10sIB6sB%ds%ds"
     # Note: mac_addr_len and ip_addr_len are omitted for readability.
     NLRI_PREFIX_FIELDS = ['ethernet_tag_id', 'mac_addr', 'ip_addr']
     _TYPE = {
         'ascii': [
+            'route_dist',
             'mac_addr',
             'ip_addr',
         ]
     }
 
     def __init__(self, route_dist, esi, ethernet_tag_id, mac_addr, ip_addr,
-                 mpls_labels, mac_addr_len=None, ip_addr_len=None,
+                 mpls_labels=None, vni=None, labels=None,
+                 mac_addr_len=None, ip_addr_len=None,
                  type_=None, length=None):
         super(EvpnMacIPAdvertisementNLRI, self).__init__(type_, length)
         self.route_dist = route_dist
@@ -1590,7 +1644,43 @@ class EvpnMacIPAdvertisementNLRI(EvpnNLRI):
         self.mac_addr = mac_addr
         self.ip_addr_len = ip_addr_len
         self.ip_addr = ip_addr
-        self.mpls_labels = mpls_labels
+        if labels:
+            # If binary type labels field value is specified, stores it
+            # and decodes as MPLS labels and VNI.
+            self._mpls_labels, self._vni = self._parse_labels(labels)
+            self._labels = labels
+        else:
+            # If either MPLS labels or VNI is specified, stores it
+            # and encodes into binary type labels field value.
+            self._labels = self._serialize_labels(mpls_labels, vni)
+            self._mpls_labels = mpls_labels
+            self._vni = vni
+
+    def _parse_labels(self, labels):
+        mpls_label1, rest, is_stack = self._mpls_label_from_bin(labels)
+        mpls_labels = [mpls_label1]
+        if rest and is_stack:
+            mpls_label2, rest, _ = self._mpls_label_from_bin(rest)
+            mpls_labels.append(mpls_label2)
+        vni, _ = self._vni_from_bin(labels)
+        return mpls_labels, vni
+
+    def _serialize_labels(self, mpls_labels, vni):
+        if mpls_labels:
+            return self._serialize_mpls_labels(mpls_labels)
+        elif vni:
+            return self._vni_to_bin(vni)
+        else:
+            return b'\x00' * 3
+
+    def _serialize_mpls_labels(self, mpls_labels):
+        if len(mpls_labels) == 1:
+            return self._mpls_label_to_bin(mpls_labels[0], is_stack=False)
+        elif len(mpls_labels) == 2:
+            return (self._mpls_label_to_bin(mpls_labels[0], is_stack=True) +
+                    self._mpls_label_to_bin(mpls_labels[1], is_stack=False))
+        else:
+            return b'\x00' * 3
 
     @classmethod
     def parse_value(cls, buf):
@@ -1604,11 +1694,6 @@ class EvpnMacIPAdvertisementNLRI(EvpnNLRI):
             ip_addr, rest = cls._ip_addr_from_bin(rest, ip_addr_len)
         else:
             ip_addr = None
-        mpls_label1, rest, is_stack = cls._mpls_label_from_bin(rest)
-        mpls_labels = [mpls_label1]
-        if rest and is_stack:
-            mpls_label2, rest, _ = cls._mpls_label_from_bin(rest)
-            mpls_labels.append(mpls_label2)
 
         return {
             'route_dist': route_dist.formatted_str,
@@ -1618,7 +1703,7 @@ class EvpnMacIPAdvertisementNLRI(EvpnNLRI):
             'mac_addr': mac_addr,
             'ip_addr_len': ip_addr_len,
             'ip_addr': ip_addr,
-            'mpls_labels': mpls_labels,
+            'labels': rest,
         }
 
     def serialize_value(self):
@@ -1631,24 +1716,34 @@ class EvpnMacIPAdvertisementNLRI(EvpnNLRI):
             ip_addr = b''
         ip_addr_len = len(ip_addr)
         self.ip_addr_len = ip_addr_len * 8  # fixup
-        mpls_label1 = b''
-        mpls_label2 = b''
-        if len(self.mpls_labels) == 1:
-            mpls_label1 = self._mpls_label_to_bin(self.mpls_labels[0],
-                                                  is_stack=False)
-        elif len(self.mpls_labels) == 2:
-            mpls_label1 = self._mpls_label_to_bin(self.mpls_labels[0],
-                                                  is_stack=True)
-            mpls_label2 = self._mpls_label_to_bin(self.mpls_labels[1],
-                                                  is_stack=False)
 
         return struct.pack(
-            self._PACK_STR % (ip_addr_len, len(mpls_label2)),
+            self._PACK_STR % (ip_addr_len, len(self._labels)),
             route_dist.serialize(), self.esi.serialize(),
             self.ethernet_tag_id,
             self.mac_addr_len, mac_addr,
             self.ip_addr_len, ip_addr,
-            mpls_label1, mpls_label2)
+            self._labels)
+
+    @property
+    def mpls_labels(self):
+        return self._mpls_labels
+
+    @mpls_labels.setter
+    def mpls_labels(self, mpls_labels):
+        self._labels = self._serialize_mpls_labels(mpls_labels)
+        self._mpls_labels = mpls_labels
+        self._vni = None  # disables VNI
+
+    @property
+    def vni(self):
+        return self._vni
+
+    @vni.setter
+    def vni(self, vni):
+        self._labels = self._vni_to_bin(vni)
+        self._mpls_labels = None  # disables MPLS labels
+        self._vni = vni
 
     @property
     def label_list(self):
@@ -1676,7 +1771,8 @@ class EvpnInclusiveMulticastEthernetTagNLRI(EvpnNLRI):
     NLRI_PREFIX_FIELDS = ['ethernet_tag_id', 'ip_addr']
     _TYPE = {
         'ascii': [
-            'ip_addr'
+            'route_dist',
+            'ip_addr',
         ]
     }
 
@@ -1735,7 +1831,8 @@ class EvpnEthernetSegmentNLRI(EvpnNLRI):
     NLRI_PREFIX_FIELDS = ['esi', 'ip_addr']
     _TYPE = {
         'ascii': [
-            'ip_addr'
+            'route_dist',
+            'ip_addr',
         ]
     }
 
@@ -2679,10 +2776,15 @@ class _ExtendedCommunity(StringifyMixin, _TypeDisp, _Value):
     IPV4_ADDRESS_SPECIFIC = 0x01
     FOUR_OCTET_AS_SPECIFIC = 0x02
     OPAQUE = 0x03
+    SUBTYPE_ENCAPSULATION = 0x0c
+    ENCAPSULATION = (OPAQUE, SUBTYPE_ENCAPSULATION)
     EVPN = 0x06
-    EVPN_MAC_MOBILITY = (EVPN, 0x00)
-    EVPN_ESI_LABEL = (EVPN, 0x01)
-    EVPN_ES_IMPORT_RT = (EVPN, 0x02)
+    SUBTYPE_EVPN_MAC_MOBILITY = 0x00
+    SUBTYPE_EVPN_ESI_LABEL = 0x01
+    SUBTYPE_EVPN_ES_IMPORT_RT = 0x02
+    EVPN_MAC_MOBILITY = (EVPN, SUBTYPE_EVPN_MAC_MOBILITY)
+    EVPN_ESI_LABEL = (EVPN, SUBTYPE_EVPN_ESI_LABEL)
+    EVPN_ES_IMPORT_RT = (EVPN, SUBTYPE_EVPN_ES_IMPORT_RT)
 
     def __init__(self, type_=None):
         if type_ is None:
@@ -2701,12 +2803,10 @@ class _ExtendedCommunity(StringifyMixin, _TypeDisp, _Value):
         (type_, value) = struct.unpack_from(cls._PACK_STR, buf)
         rest = buf[cls._PACK_STR_SIZE:]
         type_low = type_ & cls._TYPE_HIGH_MASK
-        if type_low == cls.EVPN:
-            subtype = cls.parse_subtype(value)
-            subcls = cls._lookup_type((type_low, subtype))
-        else:
+        subtype = cls.parse_subtype(value)
+        subcls = cls._lookup_type((type_low, subtype))
+        if subcls == cls._UNKNOWN_TYPE:
             subcls = cls._lookup_type(type_low)
-
         return subcls(type_=type_, **subcls.parse_value(value)), rest
 
     def serialize(self):
@@ -2769,6 +2869,48 @@ class BGPOpaqueExtendedCommunity(_ExtendedCommunity):
     def __init__(self, **kwargs):
         super(BGPOpaqueExtendedCommunity, self).__init__()
         self.do_init(BGPOpaqueExtendedCommunity, self, kwargs)
+
+
+@_ExtendedCommunity.register_type(_ExtendedCommunity.ENCAPSULATION)
+class BGPEncapsulationExtendedCommunity(_ExtendedCommunity):
+    _VALUE_PACK_STR = '!B4xH'
+    _VALUE_FIELDS = ['subtype', 'tunnel_type']
+
+    # BGP Tunnel Encapsulation Attribute Tunnel Types
+    # http://www.iana.org/assignments/bgp-parameters/bgp-parameters.xhtml#tunnel-types
+    TUNNEL_TYPE_L2TPV3 = 1
+    TUNNEL_TYPE_GRE = 2
+    TUNNEL_TYPE_IP_IN_IP = 7
+    TUNNEL_TYPE_VXLAN = 8
+    TUNNEL_TYPE_NVGRE = 9
+    TUNNEL_TYPE_MPLS = 10
+    TUNNEL_TYPE_MPLS_IN_GRE = 11
+    TUNNEL_TYPE_VXLAN_GRE = 12
+    TUNNEL_TYPE_MPLS_IN_UDP = 13
+
+    def __init__(self, **kwargs):
+        super(BGPEncapsulationExtendedCommunity, self).__init__()
+        self.do_init(BGPEncapsulationExtendedCommunity, self, kwargs)
+
+    @classmethod
+    def from_str(cls, tunnel_type):
+        """
+        Returns an instance identified with the given `tunnel_type`.
+
+        `tunnel_type` should be a str type value and corresponding to
+        BGP Tunnel Encapsulation Attribute Tunnel Type constants name
+        omitting `TUNNEL_TYPE_` prefix.
+
+        Example:
+            - `gre` means TUNNEL_TYPE_GRE
+            - `vxlan` means TUNNEL_TYPE_VXLAN
+
+        And raises AttributeError when the corresponding Tunnel Type
+        is not found to the given `tunnel_type`.
+        """
+        return cls(subtype=_ExtendedCommunity.SUBTYPE_ENCAPSULATION,
+                   tunnel_type=getattr(cls,
+                                       'TUNNEL_TYPE_' + tunnel_type.upper()))
 
 
 @_ExtendedCommunity.register_type(_ExtendedCommunity.EVPN_MAC_MOBILITY)
