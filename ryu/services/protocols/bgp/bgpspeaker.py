@@ -211,8 +211,8 @@ class BGPSpeaker(object):
             hub.spawn(ssh.SSH_CLI_CONTROLLER.start)
 
     def _notify_peer_down(self, peer):
-        remote_ip = peer.protocol.recv_open_msg.bgp_identifier
-        remote_as = peer.protocol.recv_open_msg.my_as
+        remote_ip = peer.ip_address
+        remote_as = peer.remote_as
         if self._peer_down_handler:
             self._peer_down_handler(remote_ip, remote_as)
 
@@ -454,7 +454,7 @@ class BGPSpeaker(object):
         return call('operator.show', **show)
 
     def prefix_add(self, prefix, next_hop=None, route_dist=None):
-        """ This method adds a new prefix to be advertized.
+        """ This method adds a new prefix to be advertised.
 
         ``prefix`` must be the string representation of an IP network
         (e.g., 10.1.1.0/24).
@@ -489,7 +489,7 @@ class BGPSpeaker(object):
         return call(func_name, **networks)
 
     def prefix_del(self, prefix, route_dist=None):
-        """ This method deletes a advertized prefix.
+        """ This method deletes a advertised prefix.
 
         ``prefix`` must be the string representation of an IP network
         (e.g., 10.1.1.0/24).
