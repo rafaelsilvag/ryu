@@ -37,6 +37,7 @@ from ryu.services.protocols.bgp.api.prefix import EVPN_MAC_IP_ADV_ROUTE
 from ryu.services.protocols.bgp.api.prefix import EVPN_MULTICAST_ETAG_ROUTE
 from ryu.services.protocols.bgp.api.prefix import TUNNEL_TYPE_VXLAN
 from ryu.services.protocols.bgp.api.prefix import TUNNEL_TYPE_NVGRE
+from ryu.services.protocols.bgp.operator import ssh
 from ryu.services.protocols.bgp.rtconf.common import LOCAL_AS
 from ryu.services.protocols.bgp.rtconf.common import ROUTER_ID
 from ryu.services.protocols.bgp.rtconf.common import BGP_SERVER_PORT
@@ -156,6 +157,9 @@ class BGPSpeaker(object):
                  peer_down_handler=None,
                  peer_up_handler=None,
                  ssh_console=False,
+                 ssh_port=ssh.DEFAULT_SSH_PORT,
+                 ssh_host=ssh.DEFAULT_SSH_HOST,
+                 ssh_host_key=ssh.DEFAULT_SSH_HOST_KEY,
                  label_range=DEFAULT_LABEL_RANGE):
         """Create a new BGPSpeaker object with as_number and router_id to
         listen on bgp_server_port.
@@ -189,6 +193,18 @@ class BGPSpeaker(object):
 
         ``peer_up_handler``, if specified, is called when BGP peering
         session goes up.
+
+        ``ssh_console`` specifies whether or not SSH CLI need to be started.
+
+        ``ssh_port`` specifies the port number for SSH CLI server.
+
+        ``ssh_host`` specifies the IP address for SSH CLI server.
+
+        ``ssh_host_key`` specifies the path to the host key added to
+        the keys list used by SSH CLI server.
+
+        ``label_range`` specifies the range of MPLS labels generated
+        automatically.
         """
         super(BGPSpeaker, self).__init__()
 
@@ -206,9 +222,12 @@ class BGPSpeaker(object):
         self._peer_down_handler = peer_down_handler
         self._peer_up_handler = peer_up_handler
         if ssh_console:
-            from ryu.services.protocols.bgp.operator import ssh
-
-            hub.spawn(ssh.SSH_CLI_CONTROLLER.start)
+            ssh_settings = {
+                ssh.SSH_PORT: ssh_port,
+                ssh.SSH_HOST: ssh_host,
+                ssh.SSH_HOST_KEY: ssh_host_key,
+            }
+            hub.spawn(ssh.SSH_CLI_CONTROLLER.start, **ssh_settings)
 
     def _notify_peer_down(self, peer):
         remote_ip = peer.ip_address
@@ -663,24 +682,42 @@ class BGPSpeaker(object):
 
         call('vrf.delete', **vrf)
 
-    def vrfs_get(self, format='json'):
+    def vrfs_get(self, subcommand='routes', route_dist=None,
+                 route_family='all', format='json'):
         """ This method returns the existing vrfs.
+
+        ``subcommand`` specifies the subcommand.
+
+          'routes': shows routes present for vrf
+
+          'summary': shows configuration and summary of vrf
+
+        ``route_dist`` specifies a route distinguisher value.
+        If route_family is not 'all', this value must be specified.
+
+        ``route_family`` specifies route family of the VRF.
+        This parameter must be RF_VPN_V4, RF_VPN_V6 or RF_L2_EVPN
+        or 'all'.
 
         ``format`` specifies the format of the response.
         This parameter must be 'json' or 'cli'.
         """
         show = {
-            'params': ['vrf', 'routes', 'all'],
             'format': format,
         }
+        if route_family in SUPPORTED_VRF_RF:
+            assert route_dist is not None
+            show['params'] = ['vrf', subcommand, route_dist, route_family]
+        else:
+            show['params'] = ['vrf', subcommand, 'all']
 
         return call('operator.show', **show)
 
-    def rib_get(self, family='ipv4', format='json'):
+    def rib_get(self, family='all', format='json'):
         """ This method returns the BGP routing information in a json
         format. This will be improved soon.
 
-        ``family`` specifies the address family of the RIB.
+        ``family`` specifies the address family of the RIB (e.g. 'ipv4').
 
         ``format`` specifies the format of the response.
         This parameter must be 'json' or 'cli'.
@@ -692,11 +729,11 @@ class BGPSpeaker(object):
 
         return call('operator.show', **show)
 
-    def neighbor_get(self, routetype, address, format='json'):
-        """ This method returns the BGP adj-RIB-in information in a json
-        format.
+    def neighbor_get(self, route_type, address, format='json'):
+        """ This method returns the BGP adj-RIB-in/adj-RIB-out information
+        in a json format.
 
-        ``routetype`` This parameter is necessary for only received-routes
+        ``route_type`` This parameter is necessary for only received-routes
         and sent-routes.
 
           received-routes : paths received and not withdrawn by given peer
@@ -712,10 +749,23 @@ class BGPSpeaker(object):
         show = {
             'format': format,
         }
-        if routetype == 'sent-routes' or routetype == 'received-routes':
-            show['params'] = ['neighbor', routetype, address, 'all']
+        if route_type == 'sent-routes' or route_type == 'received-routes':
+            show['params'] = ['neighbor', route_type, address, 'all']
         else:
             show['params'] = ['neighbor', 'received-routes', address, 'all']
+
+        return call('operator.show', **show)
+
+    def neighbors_get(self, format='json'):
+        """ This method returns a list of the BGP neighbors.
+
+        ``format`` specifies the format of the response.
+        This parameter must be 'json' or 'cli'.
+        """
+        show = {
+            'params': ['neighbor'],
+            'format': format,
+        }
 
         return call('operator.show', **show)
 
