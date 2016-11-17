@@ -9,7 +9,14 @@ env:
   - TOX_ENV=pypy26
   - TOX_ENV=pep8
 
+services:
+  - docker
+
+sudo: required  # Required to enable Docker service
+
 install:
+  - docker build -t ut_mininet ryu/tests/docker/mininet/
+  - CID=`docker run --privileged -t -d ut_mininet`; docker rm -f $CID  # Test container
   - pip install tox coveralls
 
 script:
@@ -17,5 +24,3 @@ script:
 
 after_success:
   - coveralls
-
-sudo: false
