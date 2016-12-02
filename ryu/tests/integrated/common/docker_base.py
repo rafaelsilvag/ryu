@@ -133,7 +133,7 @@ class Command(object):
             if out.returncode == 0:
                 return out
             LOG.error(out.stderr)
-            if try_times + 1 >= try_times:
+            if i + 1 >= try_times:
                 break
             time.sleep(interval)
         raise CommandError(out)
@@ -145,7 +145,7 @@ class Command(object):
 
 
 class DockerImage(object):
-    def __init__(self, baseimage='ubuntu:14.04.5'):
+    def __init__(self, baseimage='ubuntu:16.04'):
         self.baseimage = baseimage
         self.cmd = Command()
 
