@@ -26,6 +26,9 @@ Protocol Header classes
 .. automodule:: ryu.lib.packet.ethernet
    :members:
 
+.. autoclass:: ryu.lib.packet.lldp.lldp
+   :members:
+
 .. automodule:: ryu.lib.packet.vlan
    :members:
 
@@ -48,6 +51,12 @@ Protocol Header classes
    :members:
 
 .. automodule:: ryu.lib.packet.icmpv6
+   :members:
+
+.. automodule:: ryu.lib.packet.vxlan
+   :members:
+
+.. automodule:: ryu.lib.packet.geneve
    :members:
 
 .. automodule:: ryu.lib.packet.gre
@@ -118,7 +127,23 @@ Protocol Header classes
    :members:
 .. autoclass:: ryu.lib.packet.bgp.BGPNotification
    :members:
-.. automodule:: ryu.lib.packet.sctp
+
+.. autoclass:: ryu.lib.packet.bgp.EvpnEsi
+   :members:
+.. autoclass:: ryu.lib.packet.bgp.EvpnArbitraryEsi
+   :members:
+.. autoclass:: ryu.lib.packet.bgp.EvpnLACPEsi
+   :members:
+.. autoclass:: ryu.lib.packet.bgp.EvpnL2BridgeEsi
+   :members:
+.. autoclass:: ryu.lib.packet.bgp.EvpnMacBasedEsi
+   :members:
+.. autoclass:: ryu.lib.packet.bgp.EvpnRouterIDEsi
+   :members:
+.. autoclass:: ryu.lib.packet.bgp.EvpnASBasedEsi
+   :members:
+
+.. automodule:: ryu.lib.packet.bmp
    :members:
 
 .. autoclass:: ryu.lib.packet.bfd.bfd
@@ -132,4 +157,10 @@ Protocol Header classes
 .. autoclass:: ryu.lib.packet.bfd.KeyedSHA1
    :members:
 .. autoclass:: ryu.lib.packet.bfd.MeticulousKeyedSHA1
+   :members:
+
+.. autoclass:: ryu.lib.packet.ospf.OSPFMessage
+   :members:
+
+.. automodule:: ryu.lib.packet.sctp
    :members:
