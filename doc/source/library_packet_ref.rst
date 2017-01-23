@@ -71,11 +71,14 @@ Protocol Header classes
 .. automodule:: ryu.lib.packet.udp
    :members:
 
-.. autoclass:: ryu.lib.packet.dhcp.dhcp
+.. automodule:: ryu.lib.packet.dhcp
    :members:
-.. autoclass:: ryu.lib.packet.dhcp.options
+
+.. autoclass:: ryu.lib.packet.dhcp6.dhcp6
    :members:
-.. autoclass:: ryu.lib.packet.dhcp.option
+.. autoclass:: ryu.lib.packet.dhcp6.options
+   :members:
+.. autoclass:: ryu.lib.packet.dhcp6.option
    :members:
 
 .. autoclass:: ryu.lib.packet.vrrp.vrrp
@@ -157,6 +160,9 @@ Protocol Header classes
 .. autoclass:: ryu.lib.packet.bfd.KeyedSHA1
    :members:
 .. autoclass:: ryu.lib.packet.bfd.MeticulousKeyedSHA1
+   :members:
+
+.. automodule:: ryu.lib.packet.openflow
    :members:
 
 .. autoclass:: ryu.lib.packet.ospf.OSPFMessage
