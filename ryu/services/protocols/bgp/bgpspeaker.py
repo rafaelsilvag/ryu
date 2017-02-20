@@ -63,6 +63,7 @@ from ryu.services.protocols.bgp.rtconf.common import DEFAULT_LABEL_RANGE
 from ryu.services.protocols.bgp.rtconf.common import REFRESH_MAX_EOR_TIME
 from ryu.services.protocols.bgp.rtconf.common import REFRESH_STALEPATH_TIME
 from ryu.services.protocols.bgp.rtconf.common import LABEL_RANGE
+from ryu.services.protocols.bgp.rtconf.common import ALLOW_LOCAL_AS_IN_COUNT
 from ryu.services.protocols.bgp.rtconf import neighbors
 from ryu.services.protocols.bgp.rtconf import vrfs
 from ryu.services.protocols.bgp.rtconf.base import CAP_MBGP_IPV4
@@ -174,7 +175,8 @@ class BGPSpeaker(object):
                  peer_up_handler=None,
                  ssh_console=False,
                  ssh_port=None, ssh_host=None, ssh_host_key=None,
-                 label_range=DEFAULT_LABEL_RANGE):
+                 label_range=DEFAULT_LABEL_RANGE,
+                 allow_local_as_in_count=0):
         """Create a new BGPSpeaker object with as_number and router_id to
         listen on bgp_server_port.
 
@@ -222,7 +224,14 @@ class BGPSpeaker(object):
 
         ``label_range`` specifies the range of MPLS labels generated
         automatically.
+
+        ``allow_local_as_in_count`` maximum number of local AS number
+        occurrences in AS_PATH.  This option is useful for e.g.  auto RD/RT
+        configurations in leaf/spine architecture with shared AS numbers.
+        The default is 0 and means "local AS number is not allowed in
+        AS_PATH".  To allow local AS, 3 is recommended (Cisco's default).
         """
+
         super(BGPSpeaker, self).__init__()
 
         settings = {
@@ -232,6 +241,7 @@ class BGPSpeaker(object):
             REFRESH_STALEPATH_TIME: refresh_stalepath_time,
             REFRESH_MAX_EOR_TIME: refresh_max_eor_time,
             LABEL_RANGE: label_range,
+            ALLOW_LOCAL_AS_IN_COUNT: allow_local_as_in_count,
         }
         self._core_start(settings)
         self._init_signal_listeners()
@@ -581,18 +591,25 @@ class BGPSpeaker(object):
 
         ``vni`` specifies an Virtual Network Identifier for VXLAN
         or Virtual Subnet Identifier for NVGRE.
-        If tunnel_type is not 'vxlan' or 'nvgre', this field is ignored.
+        If tunnel_type is not TUNNEL_TYPE_VXLAN or TUNNEL_TYPE_NVGRE,
+        this field is ignored.
 
         ``next_hop`` specifies the next hop address for this prefix.
 
         ``tunnel_type`` specifies the data plane encapsulation type
-        to advertise. By the default, this encapsulation attribute is
-        not advertised.
+        to advertise.
+        By the default, this attribute is not advertised.
+        The supported encapsulation types are TUNNEL_TYPE_VXLAN and
+        TUNNEL_TYPE_NVGRE.
 
         ``pmsi_tunnel_type`` specifies the type of the PMSI tunnel attribute
         used to encode the multicast tunnel identifier.
         This field is advertised only if route_type is
         EVPN_MULTICAST_ETAG_ROUTE.
+        By the default, this attribute is not advertised.
+        The supported PMSI tunnel types are PMSI_TYPE_NO_TUNNEL_INFO and
+        PMSI_TYPE_INGRESS_REP.
+        This attribute can also carry vni if tunnel_type is specified.
 
         ``redundancy_mode`` specifies a redundancy mode type.
         The supported redundancy mode types are REDUNDANCY_MODE_ALL_ACTIVE
@@ -638,6 +655,9 @@ class BGPSpeaker(object):
                 EVPN_ETHERNET_TAG_ID: ethernet_tag_id,
                 IP_ADDR: ip_addr,
             })
+            # Set tunnel type specific arguments
+            if tunnel_type in [TUNNEL_TYPE_VXLAN, TUNNEL_TYPE_NVGRE]:
+                kwargs[EVPN_VNI] = vni
             # Set PMSI Tunnel Attribute arguments
             if pmsi_tunnel_type in [
                     PMSI_TYPE_NO_TUNNEL_INFO,
