@@ -86,6 +86,7 @@ PASSWORD = 'password'
 IN_FILTER = 'in_filter'
 OUT_FILTER = 'out_filter'
 IS_ROUTE_SERVER_CLIENT = 'is_route_server_client'
+IS_ROUTE_REFLECTOR_CLIENT = 'is_route_reflector_client'
 CHECK_FIRST_AS = 'check_first_as'
 ATTRIBUTE_MAP = 'attribute_map'
 IS_NEXT_HOP_SELF = 'is_next_hop_self'
@@ -110,6 +111,7 @@ DEFAULT_CAP_RTC = False
 DEFAULT_IN_FILTER = []
 DEFAULT_OUT_FILTER = []
 DEFAULT_IS_ROUTE_SERVER_CLIENT = False
+DEFAULT_IS_ROUTE_REFLECTOR_CLIENT = False
 DEFAULT_CHECK_FIRST_AS = False
 DEFAULT_IS_NEXT_HOP_SELF = False
 DEFAULT_CONNECT_MODE = CONNECT_MODE_BOTH
@@ -257,16 +259,25 @@ def validate_attribute_maps(attribute_maps):
 
 @validate(name=IS_ROUTE_SERVER_CLIENT)
 def validate_is_route_server_client(is_route_server_client):
-    if is_route_server_client not in (True, False):
+    if not isinstance(is_route_server_client, bool):
         raise ConfigValueError(desc='Invalid is_route_server_client(%s)' %
                                is_route_server_client)
 
     return is_route_server_client
 
 
+@validate(name=IS_ROUTE_REFLECTOR_CLIENT)
+def validate_is_route_reflector_client(is_route_reflector_client):
+    if not isinstance(is_route_reflector_client, bool):
+        raise ConfigValueError(desc='Invalid is_route_reflector_client(%s)' %
+                                    is_route_reflector_client)
+
+    return is_route_reflector_client
+
+
 @validate(name=CHECK_FIRST_AS)
 def validate_check_first_as(check_first_as):
-    if check_first_as not in (True, False):
+    if not isinstance(check_first_as, bool):
         raise ConfigValueError(desc='Invalid check_first_as(%s)' %
                                check_first_as)
 
@@ -275,7 +286,7 @@ def validate_check_first_as(check_first_as):
 
 @validate(name=IS_NEXT_HOP_SELF)
 def validate_is_next_hop_self(is_next_hop_self):
-    if is_next_hop_self not in (True, False):
+    if not isinstance(is_next_hop_self, bool):
         raise ConfigValueError(desc='Invalid is_next_hop_self(%s)' %
                                is_next_hop_self)
 
@@ -312,7 +323,9 @@ class NeighborConf(ConfWithId, ConfWithStats):
                                    LOCAL_ADDRESS, LOCAL_PORT, LOCAL_AS,
                                    PEER_NEXT_HOP, PASSWORD,
                                    IN_FILTER, OUT_FILTER,
-                                   IS_ROUTE_SERVER_CLIENT, CHECK_FIRST_AS,
+                                   IS_ROUTE_SERVER_CLIENT,
+                                   IS_ROUTE_REFLECTOR_CLIENT,
+                                   CHECK_FIRST_AS,
                                    IS_NEXT_HOP_SELF, CONNECT_MODE])
 
     def __init__(self, **kwargs):
@@ -351,6 +364,9 @@ class NeighborConf(ConfWithId, ConfWithStats):
         self._settings[IS_ROUTE_SERVER_CLIENT] = compute_optional_conf(
             IS_ROUTE_SERVER_CLIENT,
             DEFAULT_IS_ROUTE_SERVER_CLIENT, **kwargs)
+        self._settings[IS_ROUTE_REFLECTOR_CLIENT] = compute_optional_conf(
+            IS_ROUTE_REFLECTOR_CLIENT,
+            DEFAULT_IS_ROUTE_REFLECTOR_CLIENT, **kwargs)
         self._settings[CHECK_FIRST_AS] = compute_optional_conf(
             CHECK_FIRST_AS, DEFAULT_CHECK_FIRST_AS, **kwargs)
         self._settings[IS_NEXT_HOP_SELF] = compute_optional_conf(
@@ -558,6 +574,10 @@ class NeighborConf(ConfWithId, ConfWithStats):
     @property
     def is_route_server_client(self):
         return self._settings[IS_ROUTE_SERVER_CLIENT]
+
+    @property
+    def is_route_reflector_client(self):
+        return self._settings[IS_ROUTE_REFLECTOR_CLIENT]
 
     @property
     def check_first_as(self):
