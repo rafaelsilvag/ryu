@@ -54,6 +54,8 @@ from ryu.lib.packet.bgp import RF_IPv4_UC
 from ryu.lib.packet.bgp import RF_IPv6_UC
 from ryu.lib.packet.bgp import RF_IPv4_VPN
 from ryu.lib.packet.bgp import RF_IPv6_VPN
+from ryu.lib.packet.bgp import RF_IPv4_FLOWSPEC
+from ryu.lib.packet.bgp import RF_VPNv4_FLOWSPEC
 from ryu.lib.packet.bgp import RF_RTC_UC
 from ryu.lib.packet.bgp import get_rf
 
@@ -99,6 +101,8 @@ from ryu.lib.packet.bgp import BGP_ATTR_TYEP_PMSI_TUNNEL_ATTRIBUTE
 
 from ryu.lib.packet.bgp import BGPTwoOctetAsSpecificExtendedCommunity
 from ryu.lib.packet.bgp import BGPIPv4AddressSpecificExtendedCommunity
+
+from ryu.lib.packet import safi as subaddr_family
 
 LOG = logging.getLogger('bgpspeaker.peer')
 
@@ -1030,9 +1034,11 @@ class Peer(Source, Sink, NeighborConfListener, Activity):
             unknown_opttrans_attrs = None
             nlri_list = [path.nlri]
 
-            # By default, we use BGPSpeaker's interface IP with this peer
-            # as next_hop.
-            if self.is_ebgp_peer():
+            if path.route_family.safi in (subaddr_family.IP_FLOWSPEC,
+                                          subaddr_family.VPN_FLOWSPEC):
+                # Flow Specification does not have next_hop.
+                next_hop = []
+            elif self.is_ebgp_peer():
                 next_hop = self._session_next_hop(path)
                 if path.is_local() and path.has_nexthop():
                     next_hop = path.nexthop
@@ -1040,7 +1046,10 @@ class Peer(Source, Sink, NeighborConfListener, Activity):
                 next_hop = path.nexthop
                 # RFC 4271 allows us to change next_hop
                 # if configured to announce its own ip address.
-                if self._neigh_conf.is_next_hop_self:
+                # Also if the BGP route is configured without next_hop,
+                # we use path._session_next_hop() as next_hop.
+                if (self._neigh_conf.is_next_hop_self
+                        or (path.is_local() and not path.has_nexthop())):
                     next_hop = self._session_next_hop(path)
                     LOG.debug('using %s as a next_hop address instead'
                               ' of path.nexthop %s', next_hop, path.nexthop)
@@ -1518,9 +1527,14 @@ class Peer(Source, Sink, NeighborConfListener, Activity):
                 raise bgp.MissingWellKnown(BGP_ATTR_TYPE_ORIGIN)
 
             # Validate Next hop.
-            # TODO(PH): Currently ignore other cases.
-            if (not mp_reach_attr.next_hop or
-                    (mp_reach_attr.next_hop == self.host_bind_ip)):
+            if mp_reach_attr.route_family.safi in (
+                    subaddr_family.IP_FLOWSPEC,
+                    subaddr_family.VPN_FLOWSPEC):
+                # Because the Flow Specification does not have nexthop,
+                # skips check.
+                pass
+            elif (not mp_reach_attr.next_hop or
+                  mp_reach_attr.next_hop == self.host_bind_ip):
                 LOG.error('Nexthop of received UPDATE msg. (%s) same as local'
                           ' interface address %s.',
                           mp_reach_attr.next_hop,
